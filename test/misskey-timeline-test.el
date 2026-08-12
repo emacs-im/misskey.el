@@ -45,6 +45,8 @@ CW, LOCAL-ONLY, FILES, RENOTE, NAME, and USERNAME supply optional fields."
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'message) #'ignore)
+                    ((symbol-function 'misskey-auth--ensure-token)
+                     (lambda (&optional _account) "TOKEN"))
                     ((symbol-function 'misskey-http-read)
                      (lambda (endpoint parameters callback &rest options)
                        (setq captured
@@ -114,6 +116,8 @@ CW, LOCAL-ONLY, FILES, RENOTE, NAME, and USERNAME supply optional fields."
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'message) #'ignore)
+                    ((symbol-function 'misskey-auth--ensure-token)
+                     (lambda (&optional _account) "TOKEN"))
                     ((symbol-function 'misskey-http-read)
                      (lambda (_endpoint _parameters callback &rest _options)
                        (push callback callbacks))))

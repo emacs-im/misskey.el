@@ -41,7 +41,22 @@
                              :secret (lambda () "TOKEN"))))))
       (should (equal (misskey--auth-token) "TOKEN"))
       (should (equal (plist-get captured :host) "example.social"))
-      (should (equal (plist-get captured :user) "misskey.el")))))
+      (should (equal (plist-get captured :user) "misskey.el"))
+      (should (equal (plist-get captured :port) "misskey"))
+      (should (equal (plist-get captured :require) '(:secret :port)))
+      (should (equal (plist-get captured :max) 1))
+      (should (equal (misskey--auth-source-spec)
+                     '(:host "example.social"
+                       :user "misskey.el"
+                       :port "misskey"))))))
+
+(ert-deftest misskey-auth-source-spec-distinguishes-nondefault-port ()
+  (let ((misskey-instance-url "https://example.social:8443")
+        (misskey-auth-source-user "alice"))
+    (should (equal (misskey--auth-source-spec)
+                   '(:host "example.social"
+                     :user "alice"
+                     :port "misskey-8443")))))
 
 (ert-deftest misskey-auth-token-rejects-missing-secret ()
   (let ((misskey-instance-url "https://example.social"))

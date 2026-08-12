@@ -20,6 +20,9 @@
   "Use Misskey-compatible servers from Emacs."
   :group 'applications)
 
+(defconst misskey--auth-source-service "misskey"
+  "Auth-source service label for default-port Misskey API tokens.")
+
 (defcustom misskey-instance-url nil
   "HTTPS origin of the Misskey-compatible server.
 
@@ -28,9 +31,10 @@ Use only the origin, for example, `https://example.social'."
   :group 'misskey)
 
 (defcustom misskey-auth-source-user "misskey.el"
-  "User name used to find the API token in auth-source.
+  "Credential label used to find the API token in auth-source.
 
-The matching auth-source host is the host from `misskey-instance-url'."
+The matching auth-source host is the host from `misskey-instance-url'.  This
+label need not equal the Misskey username."
   :type 'string
   :group 'misskey)
 
@@ -81,24 +85,43 @@ The matching auth-source host is the host from `misskey-instance-url'."
   (list (misskey--account-origin account)
         (misskey--account-auth-source-user account)))
 
-(defun misskey--auth-token (&optional account)
-  "Return ACCOUNT's current Misskey API token from auth-source.
+(defun misskey--auth-source-spec (&optional account)
+  "Return auth-source identity arguments for ACCOUNT.
 
 ACCOUNT defaults to the account selected by current customization."
   (let* ((target (or account (misskey--current-account)))
          (origin (misskey--account-origin target))
-         (user (misskey--account-auth-source-user target))
-         (host (url-host (url-generic-parse-url origin)))
-         (source (car (auth-source-search
-                       :host host
-                       :user user
-                       :require '(:secret)
-                       :max 1)))
+         (url (url-generic-parse-url origin))
+         (port (url-port url)))
+    (list :host (url-host url)
+          :user (misskey--account-auth-source-user target)
+          :port (if (= port 443)
+                    misskey--auth-source-service
+                  (format "%s-%d" misskey--auth-source-service port)))))
+
+(defun misskey--stored-auth-token (&optional account)
+  "Return ACCOUNT's stored Misskey API token, or nil when absent.
+
+ACCOUNT defaults to the account selected by current customization."
+  (let* ((spec (misskey--auth-source-spec account))
+         (source
+          (car (apply #'auth-source-search
+                      (append spec '(:require (:secret :port) :max 1)))))
          (token (and source (auth-info-password source))))
-    (unless (and (stringp token) (not (string-empty-p token)))
+    (and (stringp token) (not (string-empty-p token)) token)))
+
+(defun misskey--auth-token (&optional account)
+  "Return ACCOUNT's current Misskey API token from auth-source.
+
+ACCOUNT defaults to the account selected by current customization."
+  (let* ((spec (misskey--auth-source-spec account))
+         (token (misskey--stored-auth-token account)))
+    (unless token
       (user-error
-       "No Misskey API token for host %s and user %s in auth-source"
-       host user))
+       "No Misskey API token for host %s, user %s, and service %s in auth-source"
+       (plist-get spec :host)
+       (plist-get spec :user)
+       (plist-get spec :port)))
     token))
 
 (defun misskey-app (&optional account)

@@ -230,6 +230,42 @@
       (when (appkit-app-live-p owner)
         (appkit-stop-app owner)))))
 
+(ert-deftest misskey-http-public-read-sync-sends-empty-json-object ()
+  (let ((misskey-instance-url "https://example.social")
+        captured)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_program) "/usr/bin/curl"))
+              ((symbol-function 'plz)
+               (lambda (method url &rest options)
+                 (setq captured
+                       (list :method method
+                             :url url
+                             :options options
+                             :curl-args
+                             (copy-sequence plz-curl-default-args)))
+                 (make-plz-response
+                  :status 200 :body "{\"ok\":true}"))))
+      (should
+       (equal
+        (misskey-http--public-read-sync
+         "miauth/session/check" (make-hash-table :test #'equal))
+        '((ok . t))))
+      (let* ((options (plist-get captured :options))
+             (headers (plist-get options :headers)))
+        (should (eq (plist-get captured :method) 'post))
+        (should
+         (equal (plist-get captured :url)
+                "https://example.social/api/miauth/session/check"))
+        (should (equal (plist-get captured :curl-args)
+                       misskey-http--curl-args))
+        (should (equal (plist-get options :body) "{}"))
+        (should (eq (plist-get options :body-type) 'binary))
+        (should (eq (plist-get options :as) 'response))
+        (should (eq (plist-get options :then) 'sync))
+        (should (plist-get options :decode))
+        (should (plist-get options :noquery))
+        (should-not (assoc "Authorization" headers))))))
+
 (provide 'misskey-http-test)
 
 ;;; misskey-http-test.el ends here

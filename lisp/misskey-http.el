@@ -52,6 +52,14 @@
             (misskey--instance-origin))
           "/api/" endpoint))
 
+(defun misskey-http--json-data (parameters)
+  "Return PARAMETERS encoded as UTF-8 JSON request data.
+
+PARAMETERS is a plist or hash table."
+  (unless (or (listp parameters) (hash-table-p parameters))
+    (error "Misskey request parameters must be a plist or hash table"))
+  (encode-coding-string (json-serialize parameters) 'utf-8))
+
 (defun misskey-http--bounded-body (body)
   "Return response BODY after enforcing the byte limit."
   (unless (stringp body)
@@ -210,8 +218,6 @@ ACCOUNT's Appkit session.  WRITEP non-nil applies unknown-write-outcome
 semantics after dispatch."
   (unless (functionp callback)
     (error "Misskey request callback is not callable"))
-  (unless (listp parameters)
-    (error "Misskey request parameters must be a plist"))
   (unless (memq writep '(nil t))
     (error "Misskey request write flag must be boolean"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
@@ -225,8 +231,7 @@ semantics after dispatch."
         (let* ((request-url (misskey-http--endpoint-url endpoint account))
                (request-owner (or owner (misskey-app account)))
                (token-value (misskey--auth-token account))
-               (data (encode-coding-string
-                      (json-serialize parameters) 'utf-8)))
+               (data (misskey-http--json-data parameters)))
           (unless (executable-find plz-curl-program)
             (error "The curl executable is unavailable: %s"
                    plz-curl-program))
@@ -277,6 +282,43 @@ semantics after dispatch."
          (when quitp
            (signal 'quit nil))
          nil)))))
+
+(defun misskey-http--public-read-sync (endpoint parameters &optional account)
+  "Synchronously read unauthenticated API ENDPOINT for ACCOUNT.
+
+PARAMETERS is a JSON plist.  Return the decoded successful value or signal a
+readable error.  This is reserved for short-lived authorization setup calls."
+  (unless (executable-find plz-curl-program)
+    (error "The curl executable is unavailable: %s" plz-curl-program))
+  (let* ((request-url (misskey-http--endpoint-url endpoint account))
+         (data (misskey-http--json-data parameters))
+         (result
+          (condition-case err
+              (let ((plz-curl-default-args misskey-http--curl-args))
+                (misskey-http--decode-response
+                 (plz 'post request-url
+                   :headers '(("Content-Type" . "application/json")
+                              ("Accept" . "application/json"))
+                   :body data
+                   :body-type 'binary
+                   :as 'response
+                   :decode t
+                   :noquery t
+                   :then 'sync)
+                 nil))
+            (plz-error
+             (if-let* ((failure
+                        (cl-find-if #'plz-error-p (cdr err))))
+                 (misskey-http--plz-error-result failure nil)
+               (cons 'error (error-message-string err))))
+            (error
+             (cons 'error
+                   (format "Misskey request failed: %s"
+                           (error-message-string err)))))))
+    (pcase result
+      (`(success . ,payload) payload)
+      (`(error . ,message) (error "%s" message))
+      (_ (error "Misskey response decoder returned an invalid result")))))
 
 (cl-defun misskey-http-read
     (endpoint parameters callback &key errback owner account)

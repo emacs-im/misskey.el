@@ -25,19 +25,28 @@
 
 (require 'misskey-core)
 (require 'misskey-http)
+(require 'misskey-auth)
 (require 'misskey-compose)
 (require 'misskey-timeline)
+
+;;;###autoload
+(defun misskey-authorize ()
+  "Authorize the configured account and store its scoped API token."
+  (interactive)
+  (misskey-auth--ensure-token))
 
 ;;;###autoload
 (defun misskey-compose ()
   "Open a buffer for composing a new Misskey note."
   (interactive)
+  (misskey-auth--ensure-token)
   (misskey-compose-open))
 
 ;;;###autoload
 (defun misskey-home ()
   "Open the authenticated Misskey home timeline."
   (interactive)
+  (misskey-auth--ensure-token)
   (misskey-timeline-open))
 
 (provide 'misskey)

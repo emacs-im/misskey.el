@@ -2,9 +2,13 @@
 
 **Instance origin:** The HTTPS scheme, host, and optional non-default port identifying one Misskey-compatible server. It contains no credentials, path, query, or fragment.
 
+**Credential label:** The auth-source login used to distinguish locally stored tokens for one instance. It need not equal the account's Misskey username.
+
 **API token:** An auth-source secret issued by an instance with the permissions needed for requested operations.
 
-**Account:** One identity on one instance, selected by an instance origin and an auth-source login. Its API token authorizes operations for that identity.
+**Account:** One identity on one instance. Its instance origin and credential label select the API token authorizing operations for that identity.
+
+**Authorization session:** One browser consent attempt that grants a new API token with selected permissions. Each attempt has a fresh, unguessable identity and yields its token at most once.
 
 **Note:** A social item authored on a Misskey-compatible instance. It has a stable ID and may contain text, files, a poll, a reply target, or a renote target.
 
