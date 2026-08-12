@@ -14,6 +14,7 @@
 
 (depends-on "emacs" "29.1")
 (depends-on "appkit" :file "../appkit.el")
+(depends-on "plz" "0.9.1")
 
 (script "refresh-local-deps" "eask -f install-file ../appkit.el")
 (script "test" "eask test ert --quiet test/*.el")

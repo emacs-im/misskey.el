@@ -287,7 +287,7 @@
          (phase (plist-get state :phase)))
     (unless (and (integerp misskey-timeline-limit)
                  (<= 1 misskey-timeline-limit 100))
-      (user-error "misskey-timeline-limit must be between 1 and 100"))
+      (user-error "Misskey timeline limit must be between 1 and 100"))
     (when (memq phase '(initial refresh))
       (user-error "The Misskey home timeline is already loading"))
     (let ((generation (1+ (plist-get state :generation)))

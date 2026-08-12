@@ -94,7 +94,7 @@
                (lambda (&optional _account) 'owner))
               ((symbol-function 'message) #'ignore)
               ((symbol-function 'misskey-http-post)
-               (lambda (&rest _) (error "setup failed"))))
+               (lambda (&rest _) (error "Setup failed"))))
       (should-error (misskey-compose-send))
       (should-not misskey-compose--sending)
       (should (string-match-p "State: Draft" (buffer-string)))
