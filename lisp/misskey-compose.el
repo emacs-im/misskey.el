@@ -17,6 +17,9 @@
 (defvar-local misskey-compose--sending nil
   "Non-nil while the current compose buffer is sending a note.")
 
+(defvar-local misskey-compose--account nil
+  "Account captured when the current draft was opened.")
+
 (defvar misskey-compose--serial 0
   "Serial used to name fresh compose buffers.")
 
@@ -43,9 +46,15 @@
   "Major mode for composing a standalone Misskey note."
   (setq-local misskey-compose--sending nil))
 
+(defun misskey-compose--account ()
+  "Return the account bound to the current draft."
+  (or misskey-compose--account
+      (misskey--current-account)))
+
 (defun misskey-compose--context ()
   "Return the generated context shown above the note body."
-  (format "New note on %s\n" (misskey--instance-origin)))
+  (format "New note on %s\n"
+          (misskey--account-origin (misskey-compose--account))))
 
 (defun misskey-compose--status-fields ()
   "Return generated status fields for the current note."
@@ -65,13 +74,17 @@
   "Refresh generated compose presentation for the current buffer."
   (appkit-compose-refresh))
 
-(defun misskey-compose-open ()
-  "Create, display, and return a fresh Misskey compose buffer."
-  (let ((buffer (generate-new-buffer
-                 (format "*misskey compose %d*"
-                         (cl-incf misskey-compose--serial)))))
+(defun misskey-compose-open (&optional account)
+  "Create, display, and return a fresh compose buffer for ACCOUNT.
+
+ACCOUNT defaults to the account selected by current customization."
+  (let* ((target (or account (misskey--current-account)))
+         (buffer (generate-new-buffer
+                  (format "*misskey compose %d*"
+                          (cl-incf misskey-compose--serial)))))
     (pop-to-buffer buffer)
     (misskey-compose-mode)
+    (setq-local misskey-compose--account target)
     (appkit-compose-setup
      :context-function #'misskey-compose--context
      :status-fields-function #'misskey-compose--status-fields
@@ -121,7 +134,8 @@
   (when misskey-compose--sending
     (user-error "This note is already being published"))
   (let ((text (misskey-compose--body-text))
-        (buffer (current-buffer)))
+        (buffer (current-buffer))
+        (account (misskey-compose--account)))
     (setq-local misskey-compose--sending t)
     (misskey-compose--refresh)
     (misskey-compose--set-body-read-only t)
@@ -134,7 +148,8 @@
            (misskey-compose--handle-success buffer payload))
          :errback (lambda (error-message)
                     (misskey-compose--handle-error buffer error-message))
-         :owner (misskey-app))
+         :account account
+         :owner (misskey-app account))
       ((error quit)
        (setq-local misskey-compose--sending nil)
        (misskey-compose--refresh)

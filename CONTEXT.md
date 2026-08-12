@@ -4,7 +4,17 @@
 
 **API token:** An auth-source secret issued by an instance with the permissions needed for requested operations.
 
-**Note:** A social item created by the Misskey `notes/create` operation. In the first supported workflow it contains non-empty plain text and public visibility.
+**Account:** One identity on one instance, selected by an instance origin and an auth-source login. Its API token authorizes operations for that identity.
+
+**Note:** A social item authored on a Misskey-compatible instance. It has a stable ID and may contain text, files, a poll, a reply target, or a renote target.
+
+**Home timeline:** The ordered notes visible to an account from itself, followed users, and followed channels according to the instance's policy.
+
+**Pure renote:** A note with its own stable identity and author but no original content, whose displayed content is another note.
+
+**Quoted note:** A note with original content that also refers to another note.
+
+**Content warning:** A summary that guards a note body until the reader explicitly reveals it.
 
 **Compose body:** User-authored note text. It is locked while one publish request is in flight, then becomes editable again and survives a failed or remotely uncertain attempt.
 

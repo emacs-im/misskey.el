@@ -2,7 +2,7 @@
 
 (package "misskey"
          "0.1.0"
-         "Publish notes to Misskey-compatible servers")
+         "Browse and publish on Misskey-compatible servers")
 
 (website-url "https://github.com/0WD0/misskey.el")
 (keywords "convenience" "comm")

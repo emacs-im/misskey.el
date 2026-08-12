@@ -1,6 +1,6 @@
 # misskey.el
 
-`misskey.el` is an Emacs client for people using Misskey-compatible servers. The current vertical slice opens an Appkit-backed standalone editor and publishes a public plain-text note through the native Misskey `notes/create` API.
+`misskey.el` is an Emacs client for Misskey-compatible servers. It reads an authenticated home timeline through Appkit-backed keyed views and publishes public plain-text notes from an Appkit Compose editor.
 
 ## Installation
 
@@ -14,35 +14,49 @@ The package requires Emacs 29.1 and Appkit 0.2.4 or newer.
 
 ## Configuration
 
-Set the instance to its HTTPS origin only:
+Select an instance and the auth-source login naming that account:
 
 ```elisp
-(setq misskey-instance-url "https://example.social")
+(setq misskey-instance-url "https://example.social"
+      misskey-auth-source-user "alice")
 ```
 
-Store an API token in auth-source under the instance host and the user name `misskey.el`. For example, an `~/.authinfo.gpg` entry is:
+The instance must be an HTTPS origin without a path, query, fragment, or credentials. Store the API token under the same host and login. For example, an `~/.authinfo.gpg` entry is:
 
 ```text
-machine example.social login misskey.el password YOUR_API_TOKEN
+machine example.social login alice password YOUR_API_TOKEN
 ```
 
-The token needs the server's `write:notes` permission. It is read only when a request starts, sent in an `Authorization: Bearer` header, omitted from the JSON body, and redacted from locally surfaced setup errors.
+The token needs `read:account` for the home timeline and `write:notes` for publishing. It is read only when a request starts, sent in an `Authorization: Bearer` header, omitted from JSON bodies, and redacted from locally surfaced setup errors.
 
 ## Quick Start
 
-Run:
+Open the authenticated home timeline:
 
 ```text
-M-x misskey-compose
+M-x misskey-home
 ```
 
-Enter the note body, then use:
+Timeline keys are:
+
+- `g`: refresh
+- `n` / `p`: move between notes using Appkit discussion navigation
+- `RET`: reveal or hide content guarded by a content warning
+- `c`: compose for the timeline's captured account
+
+Run `M-x misskey-compose` to open the composer directly. Enter the note body, then use:
 
 - `C-c C-c`: publish the note
 - `C-c C-k`: cancel the draft before publishing starts
 
-The first slice intentionally publishes only non-empty plain text with `visibility` set to `public`. It does not yet implement timelines, replies, renotes, content warnings, media, alternate visibility, local-only notes, polls, scheduling, or persisted drafts.
+The composer currently publishes only non-empty plain text with `visibility` set to `public`.
+
+## Home Timeline
+
+The timeline uses the common Misskey and Sharkey `notes/timeline` contract. `misskey-timeline-limit` controls the number of notes requested, from 1 through 100. Refreshes reconcile rows by note ID and preserve semantic point and viewport position through Appkit.
+
+Text, pure renotes, quoted notes, visibility, local-only state, counts, and attachment counts are rendered. Content-warning bodies remain hidden until explicitly revealed. MFM interpretation, media previews, pagination, replies, reactions, and renote actions are intentionally deferred to later vertical slices.
 
 ## Write Safety
 
-A `notes/create` request is dispatched once through `url.el`: redirects, connection reuse, and `url.el`'s expired-connection replay path are disabled for the write. The request becomes owned by the Misskey Appkit session before control returns to the user. The submitted body is locked while that request is in flight, preventing edits that were not part of the dispatched note. After dispatch, transport, cancellation, HTTP, malformed-response, and remote API failures are all reported as an unknown remote outcome because the server may already have created the note. The compose buffer and body stay available and editable again on failure so the user can inspect the server before deciding whether to try again.
+A `notes/create` request is dispatched once through `url.el`: redirects, connection reuse, and `url.el`'s expired-connection replay path are disabled for the write. The request becomes owned by the captured account's Appkit session before control returns to the user. The submitted body is locked while that request is in flight, preventing edits that were not part of the dispatched note. After dispatch, transport, cancellation, HTTP, malformed-response, and remote API failures are all reported as an unknown remote outcome because the server may already have created the note. The compose buffer and body stay available and editable again on failure so the user can inspect the server before deciding whether to try again.

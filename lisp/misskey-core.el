@@ -10,6 +10,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'auth-source)
 (require 'subr-x)
 (require 'url-parse)
@@ -33,10 +34,16 @@ The matching auth-source host is the host from `misskey-instance-url'."
   :type 'string
   :group 'misskey)
 
+(cl-defstruct (misskey--account
+               (:constructor misskey--account-create))
+  "One configured Misskey account target."
+  origin
+  auth-source-user)
+
 (appkit-define-app-kind misskey)
 
-(defvar misskey--app nil
-  "Lazy Appkit application session owned by Misskey.")
+(defvar misskey--apps (make-hash-table :test #'equal)
+  "Live Appkit sessions keyed by Misskey account.")
 
 (defun misskey--instance-origin ()
   "Return the validated configured Misskey HTTPS origin."
@@ -58,40 +65,70 @@ The matching auth-source host is the host from `misskey-instance-url'."
                 ""
               (format ":%d" (url-port url))))))
 
-(defun misskey--auth-token ()
-  "Return the current Misskey API token from auth-source."
-  (let* ((origin (misskey--instance-origin))
+(defun misskey--current-account ()
+  "Return the validated account selected by current customization."
+  (unless (and (stringp misskey-auth-source-user)
+               (not (string-empty-p misskey-auth-source-user)))
+    (user-error "Set misskey-auth-source-user to an auth-source login"))
+  (misskey--account-create
+   :origin (misskey--instance-origin)
+   :auth-source-user misskey-auth-source-user))
+
+(defun misskey--account-key (account)
+  "Return the stable Appkit identity for ACCOUNT."
+  (unless (misskey--account-p account)
+    (error "Invalid Misskey account"))
+  (list (misskey--account-origin account)
+        (misskey--account-auth-source-user account)))
+
+(defun misskey--auth-token (&optional account)
+  "Return ACCOUNT's current Misskey API token from auth-source.
+
+ACCOUNT defaults to the account selected by current customization."
+  (let* ((target (or account (misskey--current-account)))
+         (origin (misskey--account-origin target))
+         (user (misskey--account-auth-source-user target))
          (host (url-host (url-generic-parse-url origin)))
          (source (car (auth-source-search
                        :host host
-                       :user misskey-auth-source-user
+                       :user user
                        :require '(:secret)
                        :max 1)))
          (token (and source (auth-info-password source))))
     (unless (and (stringp token) (not (string-empty-p token)))
       (user-error
        "No Misskey API token for host %s and user %s in auth-source"
-       host misskey-auth-source-user))
+       host user))
     token))
 
-(defun misskey-app ()
-  "Return the live Misskey Appkit session, creating it when needed."
-  (let ((origin (misskey--instance-origin)))
-    (when (and (appkit-app-live-p misskey--app)
-               (not (equal origin (appkit-app-id misskey--app))))
-      (appkit-stop-app misskey--app)
-      (setq misskey--app nil))
-    (unless (appkit-app-live-p misskey--app)
-      (setq misskey--app (appkit-start-app 'misskey :id origin)))
-    misskey--app))
+(defun misskey-app (&optional account)
+  "Return ACCOUNT's live Misskey Appkit session, creating it when needed.
+
+ACCOUNT defaults to the account selected by current customization."
+  (let* ((target (or account (misskey--current-account)))
+         (key (misskey--account-key target))
+         (app (gethash key misskey--apps)))
+    (unless (appkit-app-live-p app)
+      (setq app (appkit-start-app 'misskey :id key))
+      (puthash key app misskey--apps))
+    app))
 
 (defun misskey-stop ()
-  "Stop Misskey and cancel its owned asynchronous work."
+  "Stop all Misskey sessions and cancel their owned asynchronous work."
   (interactive)
-  (unwind-protect
-      (when (appkit-app-live-p misskey--app)
-        (appkit-stop-app misskey--app))
-    (setq misskey--app nil)))
+  (let (first-error)
+    (maphash
+     (lambda (_key app)
+       (condition-case err
+           (when (appkit-app-live-p app)
+             (appkit-stop-app app))
+         (error
+          (unless first-error
+            (setq first-error err)))))
+     misskey--apps)
+    (clrhash misskey--apps)
+    (when first-error
+      (signal (car first-error) (cdr first-error)))))
 
 (provide 'misskey-core)
 

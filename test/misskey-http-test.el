@@ -35,16 +35,21 @@
   (misskey-http-test--response
       200 "{\"createdNote\":{\"id\":\"note-1\"}}"
     (should
-     (equal (misskey-http--decode-response nil)
-            '(:success ((createdNote (id . "note-1"))))))))
+     (equal (misskey-http--decode-response nil t)
+            '(success (createdNote (id . "note-1")))))))
 
 (ert-deftest misskey-http-decodes-api-error-with-code ()
   (misskey-http-test--response
       400 "{\"error\":{\"message\":\"Too long\",\"code\":\"MAX_LENGTH\"}}"
-    (let ((message (plist-get (misskey-http--decode-response nil) :error)))
+    (let ((message (cdr (misskey-http--decode-response nil t))))
       (should (string-match-p "unknown" message))
       (should (string-match-p "HTTP 400" message))
       (should (string-match-p "Too long (MAX_LENGTH)" message)))))
+
+(ert-deftest misskey-http-decodes-empty-read-array ()
+  (misskey-http-test--response 200 "[]"
+    (should (equal (misskey-http--decode-response nil nil)
+                   '(success)))))
 
 (ert-deftest misskey-http-rejects-oversized-response-before-parsing ()
   (let ((misskey-http--response-limit 4))
@@ -54,8 +59,10 @@
 (ert-deftest misskey-http-post-uses-bearer-json-without-token-body ()
   (let ((misskey-instance-url "https://example.social")
         captured callback-p)
-    (cl-letf (((symbol-function 'misskey--auth-token) (lambda () "SECRET"))
-              ((symbol-function 'misskey-app) (lambda () 'owner))
+    (cl-letf (((symbol-function 'misskey--auth-token)
+               (lambda (&optional _account) "SECRET"))
+              ((symbol-function 'misskey-app)
+               (lambda (&optional _account) 'owner))
               ((symbol-function 'misskey-http--post-once)
                (lambda (url callback callback-args)
                  (setq captured
@@ -90,8 +97,10 @@
 (ert-deftest misskey-http-redacts-token-from-post-dispatch-errors ()
   (let ((misskey-instance-url "https://example.social")
         failure)
-    (cl-letf (((symbol-function 'misskey--auth-token) (lambda () "SECRET"))
-              ((symbol-function 'misskey-app) (lambda () 'owner))
+    (cl-letf (((symbol-function 'misskey--auth-token)
+               (lambda (&optional _account) "SECRET"))
+              ((symbol-function 'misskey-app)
+               (lambda (&optional _account) 'owner))
               ((symbol-function 'url-do-setup) #'ignore)
               ((symbol-function 'url-find-proxy-for-url) (lambda (&rest _) nil))
               ((symbol-function 'url-http)
@@ -119,7 +128,8 @@
                  (list :buffer buffer
                        :errback (lambda (failure)
                                   (setq calls (1+ calls)
-                                        message failure)))
+                                        message failure))
+                       :writep t)
                  #'misskey-http--cancel-request)))
           (with-current-buffer buffer
             (setq-local misskey-http--request-handle handle))

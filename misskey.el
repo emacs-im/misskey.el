@@ -1,4 +1,4 @@
-;;; misskey.el --- Publish notes to Misskey-compatible servers -*- lexical-binding: t; -*-
+;;; misskey.el --- Browse and publish on Misskey-compatible servers -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 ;; SPDX-License-Identifier: MIT
@@ -11,8 +11,8 @@
 
 ;;; Commentary:
 
-;; misskey.el is an Emacs client for Misskey-compatible servers.  The initial
-;; release provides authenticated plain-text note composition and publishing.
+;; misskey.el is an Emacs client for Misskey-compatible servers.  It provides
+;; an authenticated home timeline and standalone note composition.
 
 ;;; Code:
 
@@ -26,12 +26,19 @@
 (require 'misskey-core)
 (require 'misskey-http)
 (require 'misskey-compose)
+(require 'misskey-timeline)
 
 ;;;###autoload
 (defun misskey-compose ()
   "Open a buffer for composing a new Misskey note."
   (interactive)
   (misskey-compose-open))
+
+;;;###autoload
+(defun misskey-home ()
+  "Open the authenticated Misskey home timeline."
+  (interactive)
+  (misskey-timeline-open))
 
 (provide 'misskey)
 
