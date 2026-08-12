@@ -46,8 +46,10 @@ Timeline keys are:
 
 Run `M-x misskey-compose` to open the composer directly. Enter the note body, then use:
 
-- `C-c C-c`: publish the note
-- `C-c C-k`: cancel the draft before publishing starts
+- `C-c C-c`: publish the draft. A multi-note draft creates the first note, then each later note as a reply
+- `C-c C-n`: insert another note after the current one
+- `C-c C-p`: drop the current extra note
+- `C-c C-k`: cancel the draft; this is refused while a publish is in flight
 
 The composer currently publishes only non-empty plain text with `visibility` set to `public`.
 

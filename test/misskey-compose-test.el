@@ -15,21 +15,24 @@
   `(let ((misskey-instance-url "https://example.social"))
      (with-temp-buffer
        (misskey-compose-mode)
+       (setq-local misskey-compose-items (list nil))
        (appkit-compose-setup
         :context-function #'misskey-compose--context
         :status-fields-function #'misskey-compose--status-fields
+        :parts-function #'misskey-compose--parts
         :footer-function #'misskey-compose--footer)
        ,@body)))
 
 (ert-deftest misskey-compose-renders-generated-public-note-shell ()
   (misskey-compose-test--with-buffer
     (should (string-match-p "New note on https://example.social"
-                            (buffer-string)))
-    (should (string-match-p "Visibility: Public" (buffer-string)))
-    (should (string-match-p "C-c C-c publish" (buffer-string)))
-    (goto-char (point-min))
-    (should (get-text-property (point) 'read-only))
+                            (appkit-compose-display-string)))
+    (should (string-match-p "Visibility: Public"
+                            (appkit-compose-display-string)))
+    (should (string-match-p "C-c C-c publish"
+                            (appkit-compose-display-string)))
     (goto-char (appkit-compose-body-start-position))
+    (should (appkit-chatbuf-point-in-input-p))
     (insert "hello")
     (should (equal (appkit-compose-body) "hello"))))
 
@@ -65,7 +68,7 @@
                (lambda (_endpoint _parameters _callback &rest options)
                  (funcall (plist-get options :errback) "failed"))))
       (misskey-compose-send)
-      (should-not misskey-compose--sending)
+      (should-not (appkit-compose-submitting-p))
       (should (equal (appkit-compose-body) "keep me")))))
 
 (ert-deftest misskey-compose-send-shows-inflight-state-until-callback ()
@@ -78,13 +81,14 @@
               ((symbol-function 'misskey-http-post)
                (lambda (&rest _) 'request-buffer)))
       (misskey-compose-send)
-      (should misskey-compose--sending)
-      (should (string-match-p "State: Publishing" (buffer-string)))
+      (should (appkit-compose-submitting-p))
+      (should (string-match-p "State: Publishing"
+                              (appkit-compose-display-string)))
       (should (string-match-p "wait for the server response"
-                              (buffer-string)))
+                              (appkit-compose-display-string)))
       (should (equal (appkit-compose-body) "pending"))
       (goto-char (appkit-compose-body-start-position))
-      (should-error (delete-char 1) :type 'text-read-only))))
+      (should-error (delete-char 1)))))
 
 (ert-deftest misskey-compose-send-restores-state-after-synchronous-error ()
   (misskey-compose-test--with-buffer
@@ -96,8 +100,8 @@
               ((symbol-function 'misskey-http-post)
                (lambda (&rest _) (error "Setup failed"))))
       (should-error (misskey-compose-send))
-      (should-not misskey-compose--sending)
-      (should (string-match-p "State: Draft" (buffer-string)))
+      (should-not (appkit-compose-submitting-p))
+      (should (string-match-p "State: Draft" (appkit-compose-display-string)))
       (should (equal (appkit-compose-body) "recover"))
       (goto-char (appkit-compose-body-end-position))
       (insert " again")
@@ -114,7 +118,7 @@
                (lambda (_endpoint _parameters callback &rest _)
                  (funcall callback '((createdNote))))))
       (misskey-compose-send)
-      (should-not misskey-compose--sending)
+      (should-not (appkit-compose-submitting-p))
       (should (equal (appkit-compose-body) "unconfirmed"))
       (goto-char (appkit-compose-body-end-position))
       (insert " again")
@@ -133,7 +137,7 @@
 (ert-deftest misskey-compose-send-rejects-empty-and-duplicate-send ()
   (misskey-compose-test--with-buffer
     (should-error (misskey-compose-send) :type 'user-error)
-    (setq-local misskey-compose--sending t)
+    (appkit-compose-begin-submit :label "Publishing")
     (should-error (misskey-compose-send) :type 'user-error)))
 
 (ert-deftest misskey-compose-send-preserves-significant-whitespace ()
@@ -151,9 +155,54 @@
         (misskey-compose-send)
         (should (equal captured "  indented\n"))))))
 
+(ert-deftest misskey-compose-add-and-remove-notes-in-the-middle ()
+  (misskey-compose-test--with-buffer
+    (goto-char (appkit-compose-body-start-position))
+    (insert "first")
+    (misskey-compose-add-note)
+    (insert "third")
+    (appkit-compose-goto-part 0)
+    (misskey-compose-add-note)
+    (insert "second")
+    (should (equal (appkit-compose-bodies) '("first" "second" "third")))
+    (appkit-compose-goto-part 1)
+    (misskey-compose-remove-note)
+    (should (equal (appkit-compose-bodies) '("first" "third")))
+    (should (eq (appkit-compose-current-part-index) 1))))
+
+(ert-deftest misskey-compose-send-replies-later-notes-to-the-first ()
+  (misskey-compose-test--with-buffer
+    (let ((buffer (current-buffer))
+          requests)
+      (goto-char (appkit-compose-body-start-position))
+      (insert "first")
+      (misskey-compose-add-note)
+      (insert "second")
+      (cl-letf (((symbol-function 'misskey-app)
+                 (lambda (&optional _account) 'owner))
+                ((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (endpoint parameters callback &rest _)
+                   (let ((note-id (format "note-%d"
+                                          (1+ (length requests)))))
+                     (push (list endpoint parameters) requests)
+                     (funcall callback
+                              (list (list 'createdNote
+                                          (cons 'id note-id))))))))
+        (misskey-compose-send)
+        (setq requests (nreverse requests))
+        (should (equal (nth 0 requests)
+                       '("notes/create"
+                         (:text "first" :visibility "public"))))
+        (should (equal (car (nth 1 requests)) "notes/create"))
+        (should (equal (plist-get (cadr (nth 1 requests)) :text) "second"))
+        (should (equal (plist-get (cadr (nth 1 requests)) :replyId)
+                       "note-1"))
+        (should-not (buffer-live-p buffer))))))
+
 (ert-deftest misskey-compose-cancel-refuses-inflight-write ()
   (misskey-compose-test--with-buffer
-    (setq-local misskey-compose--sending t)
+    (appkit-compose-begin-submit :label "Publishing")
     (should-error (misskey-compose-cancel) :type 'user-error)))
 
 (provide 'misskey-compose-test)

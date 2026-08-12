@@ -16,6 +16,8 @@
 
 **Content warning:** A summary that guards a note body until the reader explicitly reveals it.
 
-**Compose body:** User-authored note text. It is locked while one publish request is in flight, then becomes editable again and survives a failed or remotely uncertain attempt.
+**Compose body:** User-authored note text in one Appkit compose part. It is locked while a publish request is in flight, then becomes editable again and survives a failed or remotely uncertain attempt.
+
+**Compose draft:** One unpublished Misskey compose buffer. It may contain several ordered notes; publishing creates the first note, then each later note as a reply.
 
 **Publish request:** One attempt to create a note. Once dispatched, any failure has an unknown remote outcome because the instance may already have created the note.

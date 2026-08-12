@@ -5,7 +5,7 @@
 
 ;; Author: 0WD0
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (appkit "0.2.4") (plz "0.9.1"))
+;; Package-Requires: ((emacs "29.1") (appkit "0.2.8") (plz "0.9.1"))
 ;; Keywords: convenience, comm
 ;; URL: https://github.com/0WD0/misskey.el
 
