@@ -1,12 +1,12 @@
-;;; misskey-timeline.el --- Browse Misskey home timelines -*- lexical-binding: t; -*-
+;;; misskey-timeline.el --- Browse Misskey timelines -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 ;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
-;; Fetch and render the authenticated Misskey home timeline through Appkit's
-;; view lifecycle, keyed projection, and protocol-neutral discussion rows.
+;; Fetch and render authenticated Misskey timelines through Appkit's view
+;; lifecycle, keyed projection, and protocol-neutral discussion rows.
 
 ;;; Code:
 
@@ -14,31 +14,43 @@
 (require 'subr-x)
 (require 'time-date)
 (require 'appkit-core)
+(require 'appkit-invalidation)
 (require 'appkit-discussion)
 (require 'appkit-chat-avatar)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
 (require 'appkit-task-queue)
 (require 'appkit-projection)
+(require 'appkit-position)
 (require 'appkit-ui)
 (require 'misskey-compose)
 (require 'misskey-core)
 (require 'misskey-http)
 
 (defcustom misskey-timeline-limit 20
-  "Maximum number of notes requested for the home timeline."
+  "Maximum number of notes requested for each timeline page."
   :type 'integer
   :group 'misskey)
 
+(defconst misskey-timeline--kind-specs
+  '((home "Home" "notes/timeline")
+    (local "Local" "notes/local-timeline")
+    (social "Social" "notes/hybrid-timeline")
+    (global "Global" "notes/global-timeline"))
+  "Basic timeline kinds with display labels and API endpoints.")
+
+(defconst misskey-timeline--request-key 'timeline
+  "View request-table key for the active timeline transport.")
+
 (defcustom misskey-timeline-show-avatars t
-  "When non-nil, fetch and display home-timeline author avatars.
+  "When non-nil, fetch and display timeline author avatars.
 
 Avatar requests run only when Emacs can display images."
   :type 'boolean
   :group 'misskey)
 
 (defcustom misskey-timeline-show-media t
-  "When non-nil, fetch and display home-timeline media previews.
+  "When non-nil, fetch and display timeline media previews.
 
 Preview requests run only when Emacs can display images.  Sensitive files stay
 hidden until their note's content warning is revealed."
@@ -58,6 +70,7 @@ hidden until their note's content warning is revealed."
 (defvar misskey-timeline-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "TAB") #'misskey-timeline-next-kind)
     (define-key map (kbd "g") #'misskey-timeline-refresh)
     (define-key map (kbd "n") #'appkit-discussion-next-entry)
     (define-key map (kbd "p") #'appkit-discussion-previous-entry)
@@ -67,27 +80,129 @@ hidden until their note's content warning is revealed."
     map)
   "Keymap for `misskey-timeline-mode'.")
 
-(define-derived-mode misskey-timeline-mode special-mode "Misskey-Home"
-  "Major mode for an authenticated Misskey home timeline."
-  (setq-local header-line-format nil)
+(defvar-local misskey-timeline--avatar-queue nil
+  "Avatar transfer queue owned by the current timeline view.")
+
+(define-derived-mode misskey-timeline-mode special-mode "Misskey-Timeline"
+  "Major mode for authenticated Misskey timelines."
+  (setq-local header-line-format
+              '(:eval (misskey-timeline--header-line)))
   (setq-local line-spacing 0))
 
-(defun misskey-timeline--state (view)
-  "Return VIEW's validated home timeline state."
-  (let ((state (appkit-view-state view)))
+(defun misskey-timeline--make-state (account kind)
+  "Return fresh canonical state for ACCOUNT's timeline KIND."
+  (list :type 'timeline
+        :account account
+        :kind kind
+        :items nil
+        :phase 'initial
+        :message nil
+        :request-token nil
+        :loaded-p nil
+        :position nil
+        :older-exhausted-p nil
+        :revealed-content (make-hash-table :test #'equal)))
+
+(defun misskey-timeline--feed-state (app kind)
+  "Return APP's canonical state for timeline KIND."
+  (misskey-timeline--kind-spec kind)
+  (let* ((session (misskey--session app))
+         (states (misskey--session-timeline-states session)))
+    (or (gethash kind states)
+        (puthash
+         kind
+         (misskey-timeline--make-state
+          (misskey--session-account session) kind)
+         states))))
+
+(defun misskey-timeline--view-state (view)
+  "Return VIEW's validated active timeline state."
+  (let* ((state (appkit-view-state view))
+         (session (misskey--session (appkit-view-app view))))
     (unless (and (listp state)
-                 (eq (plist-get state :type) 'home)
-                 (misskey--account-p (plist-get state :account)))
-      (error "Invalid Misskey home timeline state"))
+                 (eq (plist-get state :type) 'timeline)
+                 (assq (plist-get state :kind)
+                       misskey-timeline--kind-specs)
+                 (equal (plist-get state :account)
+                        (misskey--session-account session))
+                 (hash-table-p (plist-get state :revealed-content)))
+      (error "Invalid Misskey timeline view state"))
     state))
 
 (defun misskey-timeline--current-view ()
-  "Return the current live Misskey home timeline view, or nil."
+  "Return the current live Misskey timeline view, or nil."
   (when-let* ((view (appkit-current-view))
               ((appkit-view-live-p view))
               (state (appkit-view-state view))
-              ((eq (plist-get state :type) 'home)))
+              ((eq (plist-get state :type) 'timeline)))
     view))
+
+(defun misskey-timeline--kind-spec (kind)
+  "Return the timeline specification for KIND."
+  (or (assq kind misskey-timeline--kind-specs)
+      (error "Invalid Misskey timeline kind: %S" kind)))
+
+(defun misskey-timeline--kind-label (kind)
+  "Return the display label for timeline KIND."
+  (cadr (misskey-timeline--kind-spec kind)))
+
+(defun misskey-timeline--endpoint (kind)
+  "Return the Misskey API endpoint for timeline KIND."
+  (caddr (misskey-timeline--kind-spec kind)))
+
+(defun misskey-timeline--next-kind (kind)
+  "Return the timeline kind following KIND."
+  (let ((tail (memq (misskey-timeline--kind-spec kind)
+                    misskey-timeline--kind-specs)))
+    (car (or (cadr tail) (car misskey-timeline--kind-specs)))))
+
+(defun misskey-timeline--header-command (kind)
+  "Return an interactive command that switches to timeline KIND."
+  (lambda ()
+    (interactive)
+    (if-let* ((view (misskey-timeline--current-view)))
+        (misskey-timeline--switch-kind view kind)
+      (user-error "Current buffer is not a Misskey timeline"))))
+
+(defun misskey-timeline--header-keymap (kind)
+  "Return a header-line keymap that switches to timeline KIND."
+  (let ((map (make-sparse-keymap)))
+    (define-key map [header-line down-mouse-1] #'ignore)
+    (define-key map [header-line mouse-1]
+                (misskey-timeline--header-command kind))
+    (define-key map [follow-link] 'mouse-face)
+    map))
+
+(defvar misskey-timeline--header-keymaps
+  (mapcar (lambda (spec)
+            (cons (car spec)
+                  (misskey-timeline--header-keymap (car spec))))
+          misskey-timeline--kind-specs)
+  "Mouse keymaps for timeline items in the header line.")
+
+(defun misskey-timeline--header-item (view kind label)
+  "Return VIEW's header-line LABEL for timeline KIND."
+  (let ((active (eq kind
+                    (plist-get
+                     (misskey-timeline--view-state view) :kind))))
+    (propertize label
+                'face (if active 'mode-line-emphasis 'shadow)
+                'keymap (alist-get kind misskey-timeline--header-keymaps)
+                'mouse-face 'mode-line-highlight
+                'help-echo (format "Mouse-1: Open %s timeline" label)
+                'follow-link 'ignore)))
+
+(defun misskey-timeline--header-line ()
+  "Return the current timeline header line."
+  (when-let* ((view (misskey-timeline--current-view)))
+    (concat
+     " "
+     (string-join
+      (mapcar
+       (lambda (spec)
+         (misskey-timeline--header-item view (car spec) (cadr spec)))
+       misskey-timeline--kind-specs)
+      "   "))))
 
 (defun misskey-timeline--note-id (note)
   "Return NOTE's stable identifier."
@@ -124,12 +239,10 @@ hidden until their note's content warning is revealed."
    (secure-hash 'sha256 url)
    (locate-user-emacs-file "misskey/avatars/")))
 
-(defun misskey-timeline--avatar-images (state)
-  "Return STATE's avatar image cache."
-  (let ((images (plist-get state :avatar-images)))
-    (unless (hash-table-p images)
-      (error "Misskey timeline state has no avatar image cache"))
-    images))
+(defun misskey-timeline--avatar-images (view)
+  "Return the application avatar image cache used by VIEW."
+  (misskey--session-avatar-images
+   (misskey--session (appkit-view-app view))))
 
 (defun misskey-timeline--avatar-image-from-file (file)
   "Return a two-line avatar image for cached FILE, or nil."
@@ -141,8 +254,7 @@ hidden until their note's content warning is revealed."
 (defun misskey-timeline--avatar-image (view url)
   "Return VIEW's cached avatar image for URL, or nil."
   (when (and (misskey-timeline--avatars-enabled-p) url)
-    (let* ((state (misskey-timeline--state view))
-           (images (misskey-timeline--avatar-images state)))
+    (let ((images (misskey-timeline--avatar-images view)))
       (or (gethash url images)
           (when-let* ((file
                        (appkit-media-image-cache-existing-file
@@ -154,15 +266,12 @@ hidden until their note's content warning is revealed."
 
 (defun misskey-timeline--avatar-queue (view)
   "Return VIEW's live avatar transfer queue."
-  (let* ((state (misskey-timeline--state view))
-         (queue (plist-get state :avatar-queue)))
-    (if (appkit-task-queue-live-p queue)
-        queue
-      (setq queue
-            (appkit-task-queue-create
-             view appkit-media-transfer-concurrency))
-      (setf (plist-get state :avatar-queue) queue)
-      queue)))
+  (with-current-buffer (appkit-view-buffer view)
+    (if (appkit-task-queue-live-p misskey-timeline--avatar-queue)
+        misskey-timeline--avatar-queue
+      (setq-local
+       misskey-timeline--avatar-queue
+       (appkit-task-queue-create view appkit-media-transfer-concurrency)))))
 
 (defun misskey-timeline--start-avatar-fetch (url complete)
   "Fetch avatar URL and call COMPLETE with its cached file or nil."
@@ -185,14 +294,14 @@ hidden until their note's content warning is revealed."
            collect (misskey-timeline--note-id note)))
 
 (defun misskey-timeline--finish-avatar-fetch (view url file)
-  "Refresh VIEW rows using URL after FILE has been cached."
+  "Invalidate VIEW rows using URL after FILE has been cached."
   (when (and file (appkit-view-live-p view))
-    (let* ((state (misskey-timeline--state view))
-           (images (misskey-timeline--avatar-images state))
+    (let* ((state (misskey-timeline--view-state view))
+           (images (misskey-timeline--avatar-images view))
            (keys (misskey-timeline--avatar-note-keys state url)))
       (remhash url images)
       (when keys
-        (misskey-timeline--sync view keys 'preserve)))))
+        (appkit-request-sync view :entries keys :position t)))))
 
 (defun misskey-timeline--prefetch-avatar (view url)
   "Schedule a missing avatar URL for VIEW."
@@ -249,18 +358,15 @@ hidden until their note's content warning is revealed."
      (secure-hash 'sha256 url)
      (locate-user-emacs-file "misskey/media/"))))
 
-(defun misskey-timeline--media-images (state)
-  "Return STATE's media preview image cache."
-  (let ((images (plist-get state :media-images)))
-    (unless (hash-table-p images)
-      (error "Misskey timeline state has no media image cache"))
-    images))
+(defun misskey-timeline--media-images (view)
+  "Return the application media preview image cache used by VIEW."
+  (misskey--session-media-images
+   (misskey--session (appkit-view-app view))))
 
 (defun misskey-timeline--media-image (view file)
   "Return VIEW's cached preview image for FILE, or nil."
   (when (misskey-timeline--media-enabled-p)
-    (let* ((state (misskey-timeline--state view))
-           (images (misskey-timeline--media-images state))
+    (let* ((images (misskey-timeline--media-images view))
            (file-id (alist-get 'id file)))
       (or (gethash file-id images)
           (when-let* ((cache-base
@@ -349,14 +455,14 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
            collect (misskey-timeline--note-id note)))
 
 (defun misskey-timeline--finish-media-fetch (view file-id file)
-  "Refresh VIEW rows using FILE-ID after FILE has been cached."
+  "Invalidate VIEW rows using FILE-ID after FILE has been cached."
   (when (and file (appkit-view-live-p view))
-    (let* ((state (misskey-timeline--state view))
-           (images (misskey-timeline--media-images state))
+    (let* ((state (misskey-timeline--view-state view))
+           (images (misskey-timeline--media-images view))
            (keys (misskey-timeline--media-note-keys state file-id)))
       (remhash file-id images)
       (when keys
-        (misskey-timeline--sync view keys 'preserve)))))
+        (appkit-request-sync view :entries keys :position t)))))
 
 (defun misskey-timeline--prefetch-media (view file)
   "Schedule FILE's missing preview for VIEW."
@@ -511,7 +617,7 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
   (let* ((note (appkit-projection-row-payload row))
          (key (appkit-projection-row-key row))
          (view (appkit-current-view))
-         (state (misskey-timeline--state view))
+         (state (misskey-timeline--view-state view))
          (avatar-p (misskey-timeline--avatars-enabled-p))
          (avatar-url (and avatar-p
                           (misskey-timeline--avatar-url note))))
@@ -539,13 +645,16 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
 
 (defun misskey-timeline--frame (state)
   "Return the generated frame for timeline STATE."
-  (let* ((account (plist-get state :account))
-         (origin (misskey--account-origin account))
-         (phase (plist-get state :phase))
-         (message (plist-get state :message))
-         (items (plist-get state :items)))
+  (let ((origin
+         (misskey--account-origin (plist-get state :account)))
+        (kind (plist-get state :kind))
+        (phase (plist-get state :phase))
+        (message (plist-get state :message))
+        (items (plist-get state :items)))
     (concat
-     (propertize (format "Home · %s" origin) 'face 'bold)
+     (propertize
+      (format "%s · %s" (misskey-timeline--kind-label kind) origin)
+      'face 'bold)
      "\n"
      (pcase phase
        ('initial "Loading notes...\n\n")
@@ -554,30 +663,57 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
        ('error (format "Unable to load notes.\n%s\n\n" message))
        (_ (if items "\n" "No notes returned.\n\n"))))))
 
-(defun misskey-timeline--sync (view &optional force-keys position)
-  "Synchronize VIEW, redrawing FORCE-KEYS and restoring POSITION."
-  (let* ((state (misskey-timeline--state view))
-         (rows (misskey-timeline--project (plist-get state :items))))
+(defun misskey-timeline--position-intent (events)
+  "Return the effective semantic position intent from EVENTS."
+  (or (cl-loop for event in events
+               when (eq (plist-get event :position) 'first)
+               return 'first)
+      (cl-loop for event in (reverse events)
+               for position = (plist-get event :position)
+               when (and position (not (eq position 'preserve)))
+               return position)
+      (cl-loop for event in (reverse events)
+               for position = (plist-get event :position)
+               when position return position)
+      'preserve))
+
+(defun misskey-timeline--sync (view invalidations)
+  "Synchronize VIEW from coalesced INVALIDATIONS."
+  (let* ((state (misskey-timeline--view-state view))
+         (events (appkit-view-pending-events-snapshot view))
+         (event-count (length events))
+         (position (misskey-timeline--position-intent events))
+         (force-keys (appkit-invalidations-entry-keys invalidations))
+         (reconcile-p
+          (or (appkit-invalidations-structure-p invalidations)
+              force-keys))
+         (rows
+          (and reconcile-p
+               (misskey-timeline--project (plist-get state :items)))))
     (appkit-projection-sync
      view rows
      :header (misskey-timeline--frame state)
      :footer
-     (concat "\ng refresh   n/p note   "
+     (concat "\ng refresh   TAB next timeline   n/p note   "
              (if (plist-get state :older-exhausted-p)
                  "older exhausted"
                "N older")
              "   RET reveal CW   c compose\n")
      :force-keys force-keys
-     :position (or position 'preserve))))
+     :position position
+     :reconcile-p reconcile-p)
+    (appkit-view-acknowledge-events view event-count)))
 
 (defun misskey-timeline--setup-view (view)
-  "Initialize VIEW's keyed home timeline projection."
+  "Initialize VIEW's keyed timeline projection."
   (appkit-projection-ensure
    view
    :printer #'misskey-timeline--print-row
    :anchor-property appkit-discussion-key-property
    :no-separator-p t)
-  (misskey-timeline--sync view nil 'first))
+  (appkit-view-enqueue-event view (list :position 'first))
+  (appkit-invalidate view :structure t :part 'frame :position t)
+  (appkit-sync-invalidations view))
 
 (defun misskey-timeline--validate-notes (payload)
   "Return validated timeline PAYLOAD."
@@ -607,26 +743,33 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
           (puthash id t seen)
           (push note result))))))
 
-(defun misskey-timeline--generation-current-p (view state generation)
-  "Return non-nil when GENERATION may still update STATE in VIEW."
+(defun misskey-timeline--request-current-p (view state token)
+  "Return non-nil when TOKEN may still update STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
-       (= generation (plist-get state :generation))))
+       (eq token (plist-get state :request-token))))
 
-(defun misskey-timeline--handle-error (view state generation failure)
-  "Show FAILURE for current GENERATION of STATE in VIEW."
-  (when (misskey-timeline--generation-current-p view state generation)
+(defun misskey-timeline--retire-request (view state token)
+  "Retire VIEW's transport when TOKEN still owns STATE."
+  (when (misskey-timeline--request-current-p view state token)
+    (remhash misskey-timeline--request-key
+             (appkit-view-request-table view))))
+
+(defun misskey-timeline--handle-error (view state token failure)
+  "Show FAILURE when TOKEN still owns STATE in VIEW."
+  (when (misskey-timeline--request-current-p view state token)
     (setf (plist-get state :phase) 'error
-          (plist-get state :message) failure)
-    (misskey-timeline--sync view)
+          (plist-get state :message) failure
+          (plist-get state :request-token) nil)
+    (appkit-request-sync view :part 'frame :position t)
     (message "%s" failure)))
 
-(defun misskey-timeline--handle-success (view state generation payload)
-  "Install timeline PAYLOAD for current GENERATION of STATE in VIEW."
-  (when (misskey-timeline--generation-current-p view state generation)
+(defun misskey-timeline--handle-success
+    (view state token phase payload)
+  "Install PAYLOAD when TOKEN still owns STATE in VIEW for request PHASE."
+  (when (misskey-timeline--request-current-p view state token)
     (condition-case err
         (let* ((notes (misskey-timeline--validate-notes payload))
-               (phase (plist-get state :phase))
                (current (plist-get state :items))
                (new-notes
                 (if (eq phase 'older)
@@ -643,20 +786,24 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
                    (error
                     "Invalid Misskey timeline request phase: %S" phase)))))
           (unless (eq phase 'older)
-            (clrhash (plist-get state :revealed-content))
-            (clrhash (misskey-timeline--avatar-images state))
-            (clrhash (misskey-timeline--media-images state)))
+            (clrhash (plist-get state :revealed-content)))
           (setf (plist-get state :items) installed
                 (plist-get state :phase) 'ready
-                (plist-get state :message) nil)
+                (plist-get state :message) nil
+                (plist-get state :request-token) nil
+                (plist-get state :loaded-p) t)
           (pcase phase
             ('initial
              (setf (plist-get state :older-exhausted-p) (null notes)))
             ('older
              (setf (plist-get state :older-exhausted-p)
                    (null new-notes))))
-          (misskey-timeline--sync
-           view nil (if (eq phase 'initial) 'first 'preserve))
+          (appkit-view-enqueue-event
+           view (list :position (if (eq phase 'initial)
+                                    'first
+                                  'preserve)))
+          (appkit-request-sync
+           view :structure t :part 'frame :position t)
           (misskey-timeline--prefetch-avatars view new-notes)
           (misskey-timeline--prefetch-media-files view new-notes)
           (if (eq phase 'older)
@@ -667,70 +814,155 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
             (message "Loaded %d Misskey notes" (length notes))))
       (error
        (misskey-timeline--handle-error
-        view state generation (error-message-string err))))))
+        view state token (error-message-string err))))))
+
+(defun misskey-timeline--interrupt-state-request (state)
+  "Retire STATE's request token and restore its settled phase."
+  (when (plist-get state :request-token)
+    (setf (plist-get state :request-token) nil
+          (plist-get state :phase)
+          (if (plist-get state :loaded-p) 'ready 'initial)
+          (plist-get state :message) nil)))
+
+(defun misskey-timeline--cancel-request (view)
+  "Cancel VIEW's active timeline transport, if any."
+  (let* ((table (appkit-view-request-table view))
+         (request (gethash misskey-timeline--request-key table)))
+    (remhash misskey-timeline--request-key table)
+    (when request
+      (misskey-http-cancel request))))
 
 (defun misskey-timeline--request (view phase)
   "Start one timeline PHASE request owned by VIEW."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Misskey timeline request phase: %S" phase))
-  (let* ((state (misskey-timeline--state view))
-         (current-phase (plist-get state :phase))
+  (let* ((state (misskey-timeline--view-state view))
          (items (plist-get state :items)))
     (unless (and (integerp misskey-timeline-limit)
                  (<= 1 misskey-timeline-limit 100))
       (user-error "Misskey timeline limit must be between 1 and 100"))
-    (when (memq current-phase '(initial refresh older))
-      (user-error "The Misskey home timeline is already loading"))
+    (when (plist-get state :request-token)
+      (user-error "The Misskey timeline is already loading"))
     (when (eq phase 'older)
       (unless items
-        (user-error "The Misskey home timeline has no notes"))
+        (user-error "The Misskey timeline has no notes"))
       (when (plist-get state :older-exhausted-p)
         (user-error "No older Misskey notes available")))
-    (let* ((generation (1+ (plist-get state :generation)))
+    (let* ((token (cons phase nil))
            (account (plist-get state :account))
+           (kind (plist-get state :kind))
            (until-id
             (and (eq phase 'older)
-                 (misskey-timeline--note-id (car (last items))))))
+                 (misskey-timeline--note-id (car (last items)))))
+           callback-ran-p
+           request)
       (unless (or (not (eq phase 'older)) until-id)
         (error "Misskey timeline has no older-page cursor"))
-      (setf (plist-get state :generation) generation
+      (setf (plist-get state :request-token) token
             (plist-get state :phase) phase
             (plist-get state :message) nil)
-      (misskey-timeline--sync view)
-      (misskey-http-read
-       "notes/timeline"
-       (append
-        (list :limit misskey-timeline-limit :allowPartial t)
-        (and until-id (list :untilId until-id)))
-       (lambda (payload)
-         (misskey-timeline--handle-success
-          view state generation payload))
-       :errback
-       (lambda (failure)
-         (misskey-timeline--handle-error
-          view state generation failure))
-       :owner view
-       :account account))))
+      (appkit-request-sync view :part 'frame :position t)
+      (setq
+       request
+       (misskey-http-read
+        (misskey-timeline--endpoint kind)
+        (append
+         (list :limit misskey-timeline-limit :allowPartial t)
+         (and until-id (list :untilId until-id)))
+        (lambda (payload)
+          (setq callback-ran-p t)
+          (misskey-timeline--retire-request view state token)
+          (misskey-timeline--handle-success
+           view state token phase payload))
+        :errback
+        (lambda (failure)
+          (setq callback-ran-p t)
+          (misskey-timeline--retire-request view state token)
+          (misskey-timeline--handle-error view state token failure))
+        :owner view
+        :account account))
+      (cond
+       ((and (not callback-ran-p)
+             request
+             (misskey-timeline--request-current-p view state token))
+        (puthash misskey-timeline--request-key request
+                 (appkit-view-request-table view)))
+       ((and (not callback-ran-p)
+             (null request)
+             (misskey-timeline--request-current-p view state token))
+        (misskey-timeline--handle-error
+         view state token "Misskey timeline request did not start")))
+      request)))
+
+(defun misskey-timeline--capture-position (view)
+  "Return VIEW's semantic position snapshot."
+  (with-current-buffer (appkit-view-buffer view)
+    (appkit-position-capture
+     :anchor-property appkit-discussion-key-property
+     :preserve-window-start t)))
+
+(defun misskey-timeline--switch-kind (view kind &optional refresh-p)
+  "Switch timeline VIEW to KIND.
+
+When REFRESH-P is non-nil, refresh KIND after switching."
+  (let* ((state (misskey-timeline--view-state view))
+         (current (plist-get state :kind))
+         (target
+          (misskey-timeline--feed-state
+           (appkit-view-app view) kind)))
+    (unless (eq current kind)
+      (when (plist-get state :items)
+        (setf (plist-get state :position)
+              (misskey-timeline--capture-position view)))
+      ;; Revoke the token before cancellation synchronously delivers its
+      ;; errback at the transport boundary.
+      (misskey-timeline--interrupt-state-request state)
+      (misskey-timeline--cancel-request view)
+      (misskey-timeline--interrupt-state-request target)
+      (setf (appkit-view-state view) target
+            (appkit-view-pending-events view) nil)
+      (appkit-view-enqueue-event
+       view (list :position (or (plist-get target :position) 'first)))
+      (appkit-request-sync
+       view :structure t :part 'frame :position t)
+      (force-mode-line-update))
+    (let ((active (misskey-timeline--view-state view)))
+      (unless (plist-get active :request-token)
+        (when (or refresh-p (not (plist-get active :loaded-p)))
+          (misskey-timeline--request
+           view
+           (if (plist-get active :loaded-p) 'refresh 'initial)))))
+    view))
 
 (defun misskey-timeline--refresh-view (view)
-  "Refresh live Misskey home timeline VIEW."
-  (let ((state (misskey-timeline--state view)))
+  "Refresh live Misskey timeline VIEW."
+  (let ((state (misskey-timeline--view-state view)))
     (misskey-timeline--request
-     view (if (plist-get state :items) 'refresh 'initial))))
+     view (if (plist-get state :loaded-p) 'refresh 'initial))))
 
 (defun misskey-timeline-refresh ()
-  "Refresh the current Misskey home timeline."
+  "Refresh the current Misskey timeline."
   (interactive)
   (if-let* ((view (misskey-timeline--current-view)))
       (misskey-timeline--refresh-view view)
-    (user-error "Current buffer is not a Misskey home timeline")))
+    (user-error "Current buffer is not a Misskey timeline")))
 
 (defun misskey-timeline-load-more ()
-  "Load one older page in the current Misskey home timeline."
+  "Load one older page in the current Misskey timeline."
   (interactive)
   (if-let* ((view (misskey-timeline--current-view)))
       (misskey-timeline--request view 'older)
-    (user-error "Current buffer is not a Misskey home timeline")))
+    (user-error "Current buffer is not a Misskey timeline")))
+
+(defun misskey-timeline-next-kind ()
+  "Switch to the next basic Misskey timeline."
+  (interactive)
+  (if-let* ((view (misskey-timeline--current-view)))
+      (misskey-timeline--switch-kind
+       view
+       (misskey-timeline--next-kind
+        (plist-get (misskey-timeline--view-state view) :kind)))
+    (user-error "Current buffer is not a Misskey timeline")))
 
 (defun misskey-timeline--row-at-point (view)
   "Return VIEW's projected row at point, or nil."
@@ -755,13 +987,14 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
             (row (misskey-timeline--row-at-point view))
             (note (appkit-projection-row-payload row))
             ((misskey-timeline--content-warning-p note)))
-      (let* ((state (misskey-timeline--state view))
+      (let* ((state (misskey-timeline--view-state view))
              (key (appkit-projection-row-key row))
              (revealed (plist-get state :revealed-content)))
         (if (gethash key revealed)
             (remhash key revealed)
           (puthash key t revealed))
-        (misskey-timeline--sync view (list key) key))
+        (appkit-view-enqueue-event view (list :position key))
+        (appkit-request-sync view :entry key :position t))
     (user-error "Current note has no content warning")))
 
 (defun misskey-timeline-compose ()
@@ -769,45 +1002,42 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
   (interactive)
   (if-let* ((view (misskey-timeline--current-view)))
       (misskey-compose-open
-       (plist-get (misskey-timeline--state view) :account))
-    (user-error "Current buffer is not a Misskey home timeline")))
+       (plist-get (misskey-timeline--view-state view) :account))
+    (user-error "Current buffer is not a Misskey timeline")))
 
-(defun misskey-timeline-open ()
-  "Open and refresh the selected account's home timeline."
-  (let* ((account (misskey--current-account))
+(defun misskey-timeline-open (&optional kind)
+  "Open the selected account's timeline buffer at KIND.
+
+KIND defaults to `home'.  Opening an existing buffer refreshes KIND."
+  (let* ((kind (or kind 'home))
+         (_spec (misskey-timeline--kind-spec kind))
+         (account (misskey--current-account))
          (app (misskey-app account))
-         (id 'home)
+         (id 'timeline)
          (existing (appkit-view-for-id app id))
-         (state (or (and existing (appkit-view-state existing))
-                    (list :type 'home
-                          :account account
-                          :items nil
-                          :phase 'idle
-                          :message nil
-                          :generation 0
-                          :older-exhausted-p nil
-                          :revealed-content
-                          (make-hash-table :test #'equal)
-                          :avatar-images
-                          (make-hash-table :test #'equal)
-                          :media-images
-                          (make-hash-table :test #'equal)
-                          :avatar-queue nil)))
-         (view
-          (appkit-open-view
-           :app app
-           :id id
-           :mode #'misskey-timeline-mode
-           :buffer-name
-           (format "*misskey home: %s@%s*"
-                   (misskey--account-auth-source-user account)
-                   (string-remove-prefix
-                    "https://" (misskey--account-origin account)))
-           :state state
-           :setup #'misskey-timeline--setup-view
-           :select t)))
-    (misskey-timeline--refresh-view view)
-    view))
+         (state
+          (or (and existing (appkit-view-state existing))
+              (misskey-timeline--feed-state app kind))))
+    (unless existing
+      (misskey-timeline--interrupt-state-request state))
+    (let ((view
+           (appkit-open-view
+            :app app
+            :id id
+            :mode #'misskey-timeline-mode
+            :buffer-name
+            (format "*misskey: %s@%s*"
+                    (misskey--account-auth-source-user account)
+                    (string-remove-prefix
+                     "https://" (misskey--account-origin account)))
+            :state state
+            :sync-function #'misskey-timeline--sync
+            :parts '(frame entries)
+            :position-policy appkit-discussion-key-property
+            :setup #'misskey-timeline--setup-view
+            :select t)))
+      (misskey-timeline--switch-kind view kind t)
+      view)))
 
 (provide 'misskey-timeline)
 

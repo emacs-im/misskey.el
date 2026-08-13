@@ -12,7 +12,7 @@
 ;;; Commentary:
 
 ;; misskey.el is an Emacs client for Misskey-compatible servers.  It provides
-;; an authenticated home timeline and standalone note composition.
+;; authenticated timelines and standalone note composition.
 
 ;;; Code:
 

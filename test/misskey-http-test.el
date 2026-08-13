@@ -230,6 +230,45 @@
       (when (appkit-app-live-p owner)
         (appkit-stop-app owner)))))
 
+(ert-deftest misskey-http-cancel-retires-read-once ()
+  (let* ((misskey-instance-url "https://example.social")
+         (owner (appkit-start-app 'misskey :id (make-symbol "http-read-cancel")))
+         (process (make-pipe-process
+                   :name "misskey-http-read-cancel-test" :noquery t))
+         arguments request message
+         (calls 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'executable-find)
+                   (lambda (_program) "/usr/bin/curl"))
+                  ((symbol-function 'misskey--auth-token)
+                   (lambda (&optional _account) "SECRET"))
+                  ((symbol-function 'plz)
+                   (lambda (_method _url &rest options)
+                     (setq arguments options)
+                     process)))
+          (setq request
+                (misskey-http-read
+                 "notes/timeline" '(:limit 20) #'ignore
+                 :errback (lambda (failure)
+                            (setq calls (1+ calls)
+                                  message failure))
+                 :owner owner))
+          (misskey-http-cancel request)
+          (should (= calls 1))
+          (should (string-match-p "canceled before a response" message))
+          (should-not (string-match-p "unknown" message))
+          (should-not (process-live-p process))
+          (should-not (appkit-app-handles owner))
+          (should (misskey-http--request-settled-p request))
+          (misskey-http-cancel request)
+          (funcall (plist-get arguments :else)
+                   (make-plz-error :message "curl process killed"))
+          (should (= calls 1)))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (appkit-app-live-p owner)
+        (appkit-stop-app owner)))))
+
 (ert-deftest misskey-http-public-read-sync-sends-empty-json-object ()
   (let ((misskey-instance-url "https://example.social")
         captured)

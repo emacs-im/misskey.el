@@ -35,7 +35,7 @@ An instance on a non-default HTTPS port uses the service label `misskey-PORT`, s
 
 ## Quick Start
 
-Open the authenticated home timeline:
+Open the authenticated Home timeline:
 
 ```text
 M-x misskey-home
@@ -44,6 +44,7 @@ M-x misskey-home
 Timeline keys are:
 
 - `g`: refresh
+- `TAB`: cycle through Home, Local, Social, and Global in the same buffer
 - `n` / `p`: move between notes using Appkit discussion navigation
 - `N`: load one older page without moving the selected note
 - `RET`: reveal or hide content guarded by a content warning
@@ -58,9 +59,11 @@ Run `M-x misskey-compose` to open the composer directly. Enter the note body, th
 
 The composer currently publishes only non-empty plain text with `visibility` set to `public`.
 
-## Home Timeline
+## Timelines
 
-The timeline uses the common Misskey and Sharkey `notes/timeline` contract. `misskey-timeline-limit` controls each request from 1 through 100 notes. Refreshes reconcile rows by note ID; `N` requests the next older page with the last visible note's `untilId`, removes overlapping boundary notes, and stops after the server returns no new notes. Both workflows preserve semantic point and viewport position through Appkit.
+`M-x misskey-home` opens Home. The header line exposes clickable Home (`notes/timeline`), Local (`notes/local-timeline`), Social (`notes/hybrid-timeline`), and Global (`notes/global-timeline`) modes; `TAB` cycles through them without opening another buffer. Each mode retains its loaded notes and semantic position while inactive.
+
+`misskey-timeline-limit` controls each request from 1 through 100 notes. Refreshes reconcile rows by note ID; `N` requests the next older page with the last visible note's `untilId`, removes overlapping boundary notes, and stops after the server returns no new notes. Both workflows preserve semantic point and viewport position through Appkit.
 
 On graphical displays, author avatars are fetched asynchronously and cached under `misskey/avatars/` in the Emacs user directory. Placeholders reserve the same two-line column width, so rows do not shift as images arrive. Set `misskey-timeline-show-avatars` to `nil` to disable avatar requests.
 On graphical displays, image attachments and video thumbnails are also fetched asynchronously and shown inline; activate a preview to open an image inside Emacs or play a video through Appkit. Sensitive attachments remain hidden until their note's content warning is revealed. Set `misskey-timeline-show-media` to `nil` to disable preview requests; `misskey-timeline-media-preview-width` and `misskey-timeline-media-preview-height` bound their size.

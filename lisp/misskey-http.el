@@ -331,6 +331,12 @@ Return the opaque in-flight request, or nil when setup fails."
    endpoint parameters callback
    :errback errback :owner owner :account account :writep nil))
 
+(defun misskey-http-cancel (request)
+  "Cancel opaque in-flight Misskey REQUEST exactly once."
+  (unless (misskey-http--request-p request)
+    (error "Invalid Misskey request"))
+  (misskey-http--cancel-request request))
+
 (cl-defun misskey-http-post
     (endpoint parameters callback &key errback owner account)
   "Create remote state through API ENDPOINT with JSON PARAMETERS.

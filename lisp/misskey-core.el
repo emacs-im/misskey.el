@@ -44,6 +44,22 @@ label need not equal the Misskey username."
   origin
   auth-source-user)
 
+(cl-defstruct (misskey--session
+               (:constructor misskey--session-create))
+  "State owned by one Misskey application session."
+  account
+  timeline-states
+  avatar-images
+  media-images)
+
+(defun misskey--make-session (account)
+  "Return initialized application state for ACCOUNT."
+  (misskey--session-create
+   :account account
+   :timeline-states (make-hash-table :test #'eq)
+   :avatar-images (make-hash-table :test #'equal)
+   :media-images (make-hash-table :test #'equal)))
+
 (appkit-define-app-kind misskey)
 
 (defvar misskey--apps (make-hash-table :test #'equal)
@@ -132,9 +148,18 @@ ACCOUNT defaults to the account selected by current customization."
          (key (misskey--account-key target))
          (app (gethash key misskey--apps)))
     (unless (appkit-app-live-p app)
-      (setq app (appkit-start-app 'misskey :id key))
+      (setq app
+            (appkit-start-app
+             'misskey :id key :state (misskey--make-session target)))
       (puthash key app misskey--apps))
     app))
+
+(defun misskey--session (app)
+  "Return validated application state owned by APP."
+  (let ((state (and (appkit-app-p app) (appkit-app-state app))))
+    (unless (misskey--session-p state)
+      (error "Invalid Misskey application session"))
+    state))
 
 (defun misskey-stop ()
   "Stop all Misskey sessions and cancel their owned asynchronous work."
