@@ -15,6 +15,10 @@
 (require 'time-date)
 (require 'appkit-core)
 (require 'appkit-discussion)
+(require 'appkit-chat-avatar)
+(require 'appkit-media-image)
+(require 'appkit-media-resource)
+(require 'appkit-task-queue)
 (require 'appkit-projection)
 (require 'appkit-ui)
 (require 'misskey-compose)
@@ -24,6 +28,13 @@
 (defcustom misskey-timeline-limit 20
   "Maximum number of notes requested for the home timeline."
   :type 'integer
+  :group 'misskey)
+
+(defcustom misskey-timeline-show-avatars t
+  "When non-nil, fetch and display home-timeline author avatars.
+
+Avatar requests run only when Emacs can display images."
+  :type 'boolean
   :group 'misskey)
 
 (defvar misskey-timeline-mode-map
@@ -73,6 +84,121 @@
   (if (misskey-timeline--pure-renote-p note)
       (alist-get 'renote note)
     note))
+
+(defun misskey-timeline--avatars-enabled-p ()
+  "Return non-nil when timeline avatars can be displayed."
+  (and misskey-timeline-show-avatars
+       (display-images-p)))
+
+(defun misskey-timeline--avatar-url (note)
+  "Return the HTTPS avatar URL for NOTE's displayed author, or nil."
+  (let* ((display-note (misskey-timeline--display-note note))
+         (user (alist-get 'user display-note))
+         (url (and (consp user) (alist-get 'avatarUrl user))))
+    (and (stringp url)
+         (string-match-p "\\`https://" url)
+         url)))
+
+(defun misskey-timeline--avatar-cache-base (url)
+  "Return the extensionless cache path for avatar URL."
+  (expand-file-name
+   (secure-hash 'sha256 url)
+   (locate-user-emacs-file "misskey/avatars/")))
+
+(defun misskey-timeline--avatar-images (state)
+  "Return STATE's avatar image cache."
+  (let ((images (plist-get state :avatar-images)))
+    (unless (hash-table-p images)
+      (error "Misskey timeline state has no avatar image cache"))
+    images))
+
+(defun misskey-timeline--avatar-image-from-file (file)
+  "Return a two-line avatar image for cached FILE, or nil."
+  (let ((pixel-size (appkit-chat-avatar-two-line-pixel-size)))
+    (or (appkit-media-circular-image-from-file file pixel-size)
+        (appkit-media-preview-image-from-file
+         file pixel-size pixel-size))))
+
+(defun misskey-timeline--avatar-image (view url)
+  "Return VIEW's cached avatar image for URL, or nil."
+  (when (and (misskey-timeline--avatars-enabled-p) url)
+    (let* ((state (misskey-timeline--state view))
+           (images (misskey-timeline--avatar-images state)))
+      (or (gethash url images)
+          (when-let* ((file
+                       (appkit-media-image-cache-existing-file
+                        (misskey-timeline--avatar-cache-base url)))
+                      (image
+                       (misskey-timeline--avatar-image-from-file file)))
+            (puthash url image images)
+            image)))))
+
+(defun misskey-timeline--avatar-queue (view)
+  "Return VIEW's live avatar transfer queue."
+  (let* ((state (misskey-timeline--state view))
+         (queue (plist-get state :avatar-queue)))
+    (if (appkit-task-queue-live-p queue)
+        queue
+      (setq queue
+            (appkit-task-queue-create
+             view appkit-media-transfer-concurrency))
+      (setf (plist-get state :avatar-queue) queue)
+      queue)))
+
+(defun misskey-timeline--start-avatar-fetch (url complete)
+  "Fetch avatar URL and call COMPLETE with its cached file or nil."
+  (let ((transfer
+         (appkit-media-cache-image-resource-async
+          (appkit-media-resource-create :url url)
+          (misskey-timeline--avatar-cache-base url)
+          (lambda (file)
+            (funcall complete file))
+          (lambda (_failure)
+            (funcall complete nil)))))
+    (when (appkit-media-transfer-p transfer)
+      (lambda ()
+        (appkit-media-cancel-transfer transfer)))))
+
+(defun misskey-timeline--avatar-note-keys (state url)
+  "Return keys of notes in STATE whose displayed avatar uses URL."
+  (cl-loop for note in (plist-get state :items)
+           when (equal (misskey-timeline--avatar-url note) url)
+           collect (misskey-timeline--note-id note)))
+
+(defun misskey-timeline--finish-avatar-fetch (view url file)
+  "Refresh VIEW rows using URL after FILE has been cached."
+  (when (and file (appkit-view-live-p view))
+    (let* ((state (misskey-timeline--state view))
+           (images (misskey-timeline--avatar-images state))
+           (keys (misskey-timeline--avatar-note-keys state url)))
+      (remhash url images)
+      (when keys
+        (misskey-timeline--sync view keys 'preserve)))))
+
+(defun misskey-timeline--prefetch-avatar (view url)
+  "Schedule a missing avatar URL for VIEW."
+  (unless (misskey-timeline--avatar-image view url)
+    (appkit-task-queue-submit
+     (misskey-timeline--avatar-queue view)
+     url
+     (lambda (complete)
+       (misskey-timeline--start-avatar-fetch url complete))
+     :finish
+     (lambda (file)
+       (misskey-timeline--finish-avatar-fetch view url file)))))
+
+(defun misskey-timeline--prefetch-avatars (view)
+  "Schedule missing avatars used by live timeline VIEW."
+  (when (and (misskey-timeline--avatars-enabled-p)
+             (integerp appkit-media-transfer-concurrency)
+             (> appkit-media-transfer-concurrency 0))
+    (let ((state (misskey-timeline--state view)))
+      (dolist (url
+               (delete-dups
+                (delq nil
+                      (mapcar #'misskey-timeline--avatar-url
+                              (plist-get state :items)))))
+        (misskey-timeline--prefetch-avatar view url)))))
 
 (defun misskey-timeline--user-label (note)
   "Return NOTE's readable author label."
@@ -184,11 +310,17 @@
   (let* ((note (appkit-projection-row-payload row))
          (key (appkit-projection-row-key row))
          (view (appkit-current-view))
-         (state (misskey-timeline--state view)))
+         (state (misskey-timeline--state view))
+         (avatar-p (misskey-timeline--avatars-enabled-p))
+         (avatar-url (and avatar-p
+                          (misskey-timeline--avatar-url note))))
     (appkit-discussion-insert-entry
      (appkit-discussion-entry-create
       :key key
       :depth 0
+      :avatar (and avatar-url
+                   (misskey-timeline--avatar-image view avatar-url))
+      :avatar-fallback "@"
       :heading (misskey-timeline--heading note)
       :heading-face 'bold
       :time (misskey-timeline--time note)
@@ -198,7 +330,7 @@
       :footer (misskey-timeline--footer note)
       :properties (list 'misskey-note note 'misskey-note-id key))
      :width (misskey-timeline--render-width)
-     :avatar-p nil)))
+     :avatar-p avatar-p)))
 
 (defun misskey-timeline--project (notes)
   "Project NOTES into stable Appkit rows."
@@ -272,10 +404,12 @@
         (let ((notes (misskey-timeline--validate-notes payload))
               (initialp (eq (plist-get state :phase) 'initial)))
           (clrhash (plist-get state :revealed-content))
+          (clrhash (misskey-timeline--avatar-images state))
           (setf (plist-get state :items) notes
                 (plist-get state :phase) 'ready
                 (plist-get state :message) nil)
           (misskey-timeline--sync view nil (if initialp 'first 'preserve))
+          (misskey-timeline--prefetch-avatars view)
           (message "Loaded %d Misskey notes" (length notes)))
       (error
        (misskey-timeline--handle-error
@@ -371,7 +505,10 @@
                           :message nil
                           :generation 0
                           :revealed-content
-                          (make-hash-table :test #'equal))))
+                          (make-hash-table :test #'equal)
+                          :avatar-images
+                          (make-hash-table :test #'equal)
+                          :avatar-queue nil)))
          (view
           (appkit-open-view
            :app app

@@ -11,11 +11,12 @@
 (require 'misskey-timeline)
 
 (cl-defun misskey-timeline-test--note
-    (id text &key cw local-only files renote
+    (id text &key cw local-only files renote avatar-url
         (name "Alice") (username "alice"))
   "Return a normalized test note with ID and TEXT.
 
-CW, LOCAL-ONLY, FILES, RENOTE, NAME, and USERNAME supply optional fields."
+CW, LOCAL-ONLY, FILES, RENOTE, AVATAR-URL, NAME, and USERNAME supply optional
+fields."
   `((id . ,id)
     (createdAt . "2026-08-13T00:00:00.000Z")
     (text . ,text)
@@ -27,7 +28,10 @@ CW, LOCAL-ONLY, FILES, RENOTE, NAME, and USERNAME supply optional fields."
     (reactionCount . 3)
     (files . ,files)
     (renote . ,renote)
-    (user (name . ,name) (username . ,username) (host))))
+    (user (name . ,name)
+          (username . ,username)
+          (host)
+          (avatarUrl . ,avatar-url))))
 
 (defun misskey-timeline-test--cleanup (view buffer)
   "Destroy test VIEW and BUFFER, then stop Misskey sessions."
@@ -162,6 +166,121 @@ CW, LOCAL-ONLY, FILES, RENOTE, NAME, and USERNAME supply optional fields."
                 (should-error (misskey-timeline-refresh)
                               :type 'user-error)
                 (should (= (length callbacks) request-count))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-home-loads-avatar-with-stable-row-position ()
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey-timeline-show-avatars t)
+        (appkit-media-transfer-concurrency 2)
+        (misskey--apps (make-hash-table :test #'equal))
+        (avatar-url "https://cdn.example/alice.png")
+        (avatar-image '(image :type png :data "avatar"))
+        avatar-images
+        cache-file
+        download-success
+        requested-resource
+        requested-cache-base
+        view
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'display-images-p)
+                (lambda (&rest _arguments) t))
+               ((symbol-function 'misskey-auth--ensure-token)
+                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey-http-read)
+                (lambda (_endpoint _parameters callback &rest _options)
+                  (funcall
+                   callback
+                   (list
+                    (misskey-timeline-test--note
+                     "n1" "body" :avatar-url avatar-url)))))
+               ((symbol-function 'appkit-chat-avatar-prefixes)
+                (lambda (image _fallback &rest _options)
+                  (push image avatar-images)
+                  '(:header "H " :first-body "B " :rest-body "R ")))
+               ((symbol-function 'appkit-media-image-cache-existing-file)
+                (lambda (_cache-base) cache-file))
+               ((symbol-function 'appkit-media-circular-image-from-file)
+                (lambda (file _pixel-size)
+                  (and (equal file cache-file) avatar-image)))
+               ((symbol-function 'appkit-media-cache-image-resource-async)
+                (lambda (resource cache-base success _error &rest _options)
+                  (setq requested-resource resource
+                        requested-cache-base cache-base
+                        download-success success)
+                  'transfer))
+               ((symbol-function 'appkit-media-transfer-p)
+                (lambda (object) (eq object 'transfer)))
+               ((symbol-function 'appkit-media-cancel-transfer) #'ignore))
+            (setq view (call-interactively #'misskey-home)
+                  buffer (appkit-view-buffer view))
+            (should (equal (alist-get 'url requested-resource) avatar-url))
+            (should
+             (string-suffix-p
+              (secure-hash 'sha256 avatar-url) requested-cache-base))
+            (should (functionp download-success))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (appkit-discussion-next-entry)
+              (should (equal (appkit-discussion-key-at-point) "n1"))
+              (should-not (car avatar-images))
+              (setq cache-file "/tmp/misskey-avatar.png")
+              (funcall download-success cache-file)
+              (should (equal (car avatar-images) avatar-image))
+              (should (equal (appkit-discussion-key-at-point) "n1"))
+              (should-not
+               (appkit-task-queue-pending-p
+                (plist-get (appkit-view-state view) :avatar-queue))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-home-cancels-avatar-transfer-with-view ()
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey-timeline-show-avatars t)
+        (appkit-media-transfer-concurrency 2)
+        (misskey--apps (make-hash-table :test #'equal))
+        (avatar-url "https://cdn.example/alice.png")
+        (cancellations 0)
+        view
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'display-images-p)
+                (lambda (&rest _arguments) t))
+               ((symbol-function 'misskey-auth--ensure-token)
+                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey-http-read)
+                (lambda (_endpoint _parameters callback &rest _options)
+                  (funcall
+                   callback
+                   (list
+                    (misskey-timeline-test--note
+                     "n1" "body" :avatar-url avatar-url)))))
+               ((symbol-function 'appkit-chat-avatar-prefixes)
+                (lambda (&rest _arguments)
+                  '(:header "H " :first-body "B " :rest-body "R ")))
+               ((symbol-function 'appkit-media-image-cache-existing-file)
+                (lambda (_cache-base) nil))
+               ((symbol-function 'appkit-media-cache-image-resource-async)
+                (lambda (&rest _arguments) 'transfer))
+               ((symbol-function 'appkit-media-transfer-p)
+                (lambda (object) (eq object 'transfer)))
+               ((symbol-function 'appkit-media-cancel-transfer)
+                (lambda (_transfer)
+                  (cl-incf cancellations))))
+            (setq view (call-interactively #'misskey-home)
+                  buffer (appkit-view-buffer view))
+            (should
+             (appkit-task-queue-pending-p
+              (plist-get (appkit-view-state view) :avatar-queue)))
+            (appkit-kill-view view t)
+            (should (= cancellations 1))))
       (misskey-timeline-test--cleanup view buffer))))
 
 (provide 'misskey-timeline-test)

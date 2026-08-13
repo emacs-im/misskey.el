@@ -12,6 +12,7 @@
 - A compose draft can hold several ordered notes on Appkit's multi-part surface. `C-c C-n` inserts another note after the current one, `C-c C-p` drops the current extra note, and publish creates the first note then each later note with `replyId`.
 - Added `M-x misskey-home`, backed by Appkit views, keyed projection reconciliation, and discussion rows for the authenticated home timeline.
 - Added safe rendering for pure renotes, quoted notes, content warnings, visibility, local-only state, and note counters.
+- Added lifecycle-owned asynchronous author avatars to the home timeline, with stable placeholder geometry, shared bounded transfers, and a disk cache.
 - Bound timeline views, compose drafts, credentials, and Appkit request ownership to the same captured account.
 - Added authenticated read requests whose empty arrays remain successful and whose failures are not mislabeled as uncertain writes.
 
