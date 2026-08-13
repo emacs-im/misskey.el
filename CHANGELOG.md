@@ -4,20 +4,20 @@
 
 ### Added
 
-- Added a public `M-x misskey-compose` workflow for public plain-text notes on a configured Misskey-compatible HTTPS origin.
-- Added auth-source Bearer-token lookup, Plz/curl transport with retries and redirects disabled, bounded JSON response decoding, structured Misskey API errors, Appkit-owned request cancellation, and unknown-outcome reporting for every post-dispatch failure.
-- Added first-use MiAuth browser authorization through `M-x misskey-authorize`, `misskey-home`, and `misskey-compose`; scoped tokens are persisted to a configured encrypted auth-source file under a Misskey-specific service label.
-- Added an Appkit Compose surface with generated instance, visibility, and request-state fields while keeping the draft body editable and available after failures.
-- Compose publish now uses Appkit's shared submit session for in-flight state. `C-c C-k` still refuses while a publish is in flight because Misskey has not attached a transport cancel hook yet.
-- A compose draft can hold several ordered notes on Appkit's multi-part surface. `C-c C-n` inserts another note after the current one, `C-c C-p` drops the current extra note, and publish creates the first note then each later note with `replyId`.
-- Added `M-x misskey-home` with a clickable header line and `TAB` cycling across Home, Local, Social, and Global in one Appkit view. Each mode retains session-owned canonical state for loaded notes and semantic position, and switching retires the superseded request before replacing the active view state.
-- Added `N` pagination for older timeline notes through Misskey's `untilId` contract, with duplicate-boundary removal, exhaustion tracking, and Appkit-preserved point and viewport position.
-- Added safe rendering for pure renotes, quoted notes, content warnings, visibility, local-only state, and note counters.
-- Added lifecycle-owned asynchronous author avatars to timeline views, with stable placeholder geometry, shared bounded transfers, and a disk cache.
-- Added lifecycle-owned inline image and video-thumbnail previews, accessible fallback text, in-Emacs image opening, Appkit video playback, and sensitive-media hiding.
-- Bound timeline views, compose drafts, credentials, and Appkit request ownership to the same captured account.
-- Added authenticated read requests whose empty arrays remain successful and whose failures are not mislabeled as uncertain writes.
+- Added MiAuth authorization through encrypted auth-source storage for `read:account`, `read:notifications`, `write:notes`, `write:reactions`, `write:favorites`, `write:following`, `write:notifications`, and `write:drive`; bearer token and stable remote user ID are persisted as one credential, and `M-x misskey-authorize` atomically replaces both and their live session.
+- Added Appkit-backed Home, Local, Social, and Global timelines with retained per-mode state, stable-key reconciliation, semantic position preservation, older-page cursors, content-warning reveal state, and shared media resources.
+- Added protocol-neutral Misskey Note validation and rendering shared by timelines, threads, profiles, and searches, including pure renotes, quotes, visibility, local-only state, counts, replies, media, and stable presentation dependencies.
+- Added thread views with a focused note, ancestor chain, direct-reply pagination, Appkit discussion geometry, reply and quote composition, and request replacement.
+- Added Appkit Compose drafts with Public, Home, and Followers visibility, ordered reply-chain notes, reply and quote targets, per-part local attachments, streaming Drive uploads, file-only notes, and reuse of successful Drive IDs after later failures.
+- Added profile views with Notes, Notes + replies, and Media modes plus paged followers and following directories keyed by user identity.
+- Added independent paged note searches whose request, result, cursor, reveal, and lifecycle state is isolated from every other view.
+- Added notifications with stable identities, explicit `markAsRead: false` reads, older-page loading, activation of referenced notes or users, and `M` as the only remote mark-all-read action.
+- Added one contextual action path for reactions, favorites, pure renotes, note deletion, follow, and unfollow, with account-scoped state overrides and dependency-driven invalidation across every live view.
+- Added lifecycle-owned presentation for every Drive attachment through Appkit, including guarded sensitive media, original-resource open actions, and MIME-filtered avatar/image/video preview caching.
+- Added authenticated JSON and streaming multipart curl transports with redirects and retries disabled, raw response and diagnostic byte caps, strict bearer validation, Appkit-owned cancellation, token redaction, and unknown-outcome reporting for every post-dispatch write failure.
 
 ### Fixed
 
-- Compose is now a chatbuf: committed notes render as draft rows, the trailing composer holds the current note, and undo no longer rewrites generated chrome.
+- Compose uses Appkit's chatbuf surface: generated context, status, attachment rows, and committed parts no longer share the editable input region.
+- Successful Drive uploads remain attached to a failed draft, avoiding duplicate uploads on a deliberate retry of note creation.
+- Browsing or paging a notification view never implicitly acknowledges remote notifications.

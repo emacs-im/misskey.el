@@ -9,6 +9,14 @@
 (require 'cl-lib)
 (require 'misskey)
 (require 'misskey-timeline)
+(require 'misskey-test-helper
+         (expand-file-name
+          "misskey-test-helper"
+          (file-name-directory
+           (or load-file-name
+               (and (boundp 'byte-compile-current-file)
+                    byte-compile-current-file)
+               buffer-file-name))))
 
 (cl-defun misskey-timeline-test--note
     (id text &key cw local-only files renote avatar-url
@@ -28,7 +36,8 @@ fields."
     (reactionCount . 3)
     (files . ,files)
     (renote . ,renote)
-    (user (name . ,name)
+    (user (id . ,(concat "u-" username))
+          (name . ,name)
           (username . ,username)
           (host)
           (avatarUrl . ,avatar-url))))
@@ -59,6 +68,14 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
   "Synchronize pending invalidations for test VIEW."
   (appkit-sync-invalidations view))
 
+(defun misskey-timeline-test--authenticated-account (&optional account)
+  "Bind provisional ACCOUNT to a stable test user identity."
+  (let ((target (or account (misskey--current-account))))
+    (misskey--account-create
+     :origin (misskey--account-origin target)
+     :auth-source-user (misskey--account-auth-source-user target)
+     :remote-user-id "self")))
+
 (ert-deftest misskey-home-renders-keyed-notes-through-installed-command ()
   (let ((misskey-instance-url "https://example.social")
         (misskey-auth-source-user "alice")
@@ -67,8 +84,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'message) #'ignore)
-                    ((symbol-function 'misskey-auth--ensure-token)
-                     (lambda (&optional _account) "TOKEN"))
+                    ((symbol-function 'misskey--authenticated-account)
+                     #'misskey-timeline-test--authenticated-account)
                     ((symbol-function 'misskey-http-read)
                      (lambda (endpoint parameters callback &rest options)
                        (setq captured
@@ -115,7 +132,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                (eq (lookup-key misskey-timeline-mode-map (kbd "N"))
                    #'misskey-timeline-load-more))
               (should (eq (lookup-key misskey-timeline-mode-map (kbd "RET"))
-                          #'misskey-timeline-toggle-content-warning))
+                          #'misskey-render-toggle-content-warning))
               (should (eq (lookup-key misskey-timeline-mode-map (kbd "c"))
                           #'misskey-timeline-compose))
               (should (string-match-p "CW: Spoiler" (buffer-string)))
@@ -147,8 +164,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
     (unwind-protect
         (save-window-excursion
           (cl-letf (((symbol-function 'message) #'ignore)
-                    ((symbol-function 'misskey-auth--ensure-token)
-                     (lambda (&optional _account) "TOKEN"))
+                    ((symbol-function 'misskey--authenticated-account)
+                     #'misskey-timeline-test--authenticated-account)
                     ((symbol-function 'misskey-http-read)
                      (lambda (_endpoint _parameters callback &rest _options)
                        (push callback callbacks))))
@@ -209,8 +226,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (endpoint _parameters callback &rest _options)
                   (let ((request (make-symbol endpoint)))
@@ -284,8 +301,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                   (should (= 1
                              (hash-table-count
                               (appkit-app-view-registry
-                               (appkit-view-app view)))))))))
-      (misskey-timeline-test--cleanup view buffer)))))
+                               (appkit-view-app view))))))))))
+      (misskey-timeline-test--cleanup view buffer))))
 
 (ert-deftest misskey-home-loads-older-notes-with-stable-position ()
   (let ((misskey-instance-url "https://example.social")
@@ -298,8 +315,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (endpoint parameters callback &rest options)
                   (push
@@ -389,10 +406,10 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'display-images-p)
+               ((symbol-function 'appkit-media-inline-image-rendering-available-p)
                 (lambda (&rest _arguments) t))
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (_endpoint _parameters callback &rest _options)
                   (funcall
@@ -406,6 +423,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                   '(:header "H " :first-body "B " :rest-body "R ")))
                ((symbol-function 'appkit-media-image-cache-existing-file)
                 (lambda (_cache-base) cache-file))
+               ((symbol-function 'appkit-media-file-present-p)
+                (lambda (file) (and cache-file (equal file cache-file))))
                ((symbol-function 'appkit-media-circular-image-from-file)
                 (lambda (file _pixel-size)
                   (and (equal file cache-file) avatar-image)))
@@ -436,9 +455,12 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (misskey-timeline-test--flush view)
               (should (equal (car avatar-images) avatar-image))
               (should (equal (appkit-discussion-key-at-point) "n1"))
-              (should-not
-               (appkit-task-queue-pending-p
-                misskey-timeline--avatar-queue)))))
+              (let ((entry
+                     (gethash
+                      (list :avatar avatar-url)
+                      (appkit-app-resource-store (appkit-view-app view)))))
+                (should (eq (plist-get entry :status) 'ready))
+                (should-not (plist-get entry :handle))))))
       (misskey-timeline-test--cleanup view buffer))))
 
 (ert-deftest misskey-home-loads-media-preview-with-stable-row-position ()
@@ -461,10 +483,10 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'display-images-p)
+               ((symbol-function 'appkit-media-inline-image-rendering-available-p)
                 (lambda (&rest _arguments) t))
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (_endpoint _parameters callback &rest _options)
                   (funcall
@@ -474,6 +496,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                      "n1" "body" :files (list media-file))))))
                ((symbol-function 'appkit-media-image-cache-existing-file)
                 (lambda (_cache-base) cache-file))
+               ((symbol-function 'appkit-media-file-present-p)
+                (lambda (file) (and cache-file (equal file cache-file))))
                ((symbol-function 'appkit-media-preview-image-from-file)
                 (lambda (file _width _height)
                   (and (equal file cache-file) media-image)))
@@ -511,43 +535,49 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (misskey-timeline-test--flush view)
               (should (equal (car inserted-images) media-image))
               (should (equal (appkit-discussion-key-at-point) "n1"))
-              (should-not
-               (appkit-task-queue-pending-p
-                misskey-timeline--avatar-queue)))))
+              (let ((entry
+                     (gethash
+                      (list :media (alist-get 'id media-file))
+                      (appkit-app-resource-store (appkit-view-app view)))))
+                (should (eq (plist-get entry :status) 'ready))
+                (should-not (plist-get entry :handle))))))
       (misskey-timeline-test--cleanup view buffer))))
 
-(ert-deftest misskey-home-hides-sensitive-media-until-revealed ()
+(ert-deftest misskey-home-reveals-sensitive-media-without-content-warning ()
   (let ((misskey-instance-url "https://example.social")
         (misskey-auth-source-user "alice")
         (misskey-timeline-show-avatars nil)
         (misskey-timeline-show-media t)
         (misskey--apps (make-hash-table :test #'equal))
         (media-file (misskey-timeline-test--file "f1" t))
+        (preview-requests 0)
         view
         buffer)
     (unwind-protect
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'display-images-p)
+               ((symbol-function 'appkit-media-inline-image-rendering-available-p)
                 (lambda (&rest _arguments) t))
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (_endpoint _parameters callback &rest _options)
                   (funcall
                    callback
                    (list
                     (misskey-timeline-test--note
-                     "n1" "hidden body"
-                     :cw "Spoiler" :files (list media-file))))))
+                     "n1" "visible body" :files (list media-file))))))
                ((symbol-function 'appkit-media-image-cache-existing-file)
                 (lambda (_cache-base) nil))
                ((symbol-function 'appkit-media-cache-image-resource-async)
-                (lambda (&rest _arguments) nil)))
+                (lambda (&rest _arguments)
+                  (cl-incf preview-requests)
+                  nil)))
             (setq view (call-interactively #'misskey-home)
                   buffer (appkit-view-buffer view))
             (misskey-timeline-test--flush view)
+            (should (= 0 preview-requests))
             (with-current-buffer buffer
               (should (string-match-p "\\[sensitive media\\]"
                                       (buffer-string)))
@@ -555,7 +585,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                                           (buffer-string)))
               (goto-char (point-min))
               (appkit-discussion-next-entry)
-              (misskey-timeline-toggle-content-warning)
+              (misskey-render-toggle-content-warning)
+              (should (= 1 preview-requests))
               (misskey-timeline-test--flush view)
               (should-not (string-match-p "\\[sensitive media\\]"
                                           (buffer-string)))
@@ -563,7 +594,40 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                                       (buffer-string))))))
       (misskey-timeline-test--cleanup view buffer))))
 
-(ert-deftest misskey-home-cancels-avatar-transfer-with-view ()
+(ert-deftest misskey-media-sensitive-prefetch-uses-outer-row-reveal-identity ()
+  (let* ((file (misskey-timeline-test--file "guarded" t))
+         (target
+          (misskey-timeline-test--note
+           "target" "target body" :files (list file)))
+         (pure-renote
+          (misskey-timeline-test--note
+           "pure-wrapper" nil :renote target))
+         (quote
+          (misskey-timeline-test--note
+           "quote-wrapper" "comment" :renote target))
+         (revealed-content (make-hash-table :test #'equal))
+         (view
+          (appkit-view--create
+           :state (list :revealed-content revealed-content)
+           :alive-p t))
+         requested)
+    (cl-letf (((symbol-function 'appkit-view-live-p)
+               (lambda (_view) t))
+              ((symbol-function 'misskey-media-request-avatar) #'ignore)
+              ((symbol-function 'misskey-media-request-file)
+               (lambda (_view requested-file)
+                 (push requested-file requested))))
+      (dolist (note (list pure-renote quote))
+        (clrhash revealed-content)
+        (setq requested nil)
+        (puthash (misskey-note-id target) t revealed-content)
+        (misskey-media-prefetch-notes view (list note))
+        (should-not requested)
+        (puthash (misskey-note-id note) t revealed-content)
+        (misskey-media-prefetch-notes view (list note))
+        (should (equal (list file) requested))))))
+
+(ert-deftest misskey-home-shares-avatar-transfer-until-app-stops ()
   (let ((misskey-instance-url "https://example.social")
         (misskey-auth-source-user "alice")
         (misskey-timeline-show-avatars t)
@@ -577,10 +641,10 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (save-window-excursion
           (cl-letf
               (((symbol-function 'message) #'ignore)
-               ((symbol-function 'display-images-p)
+               ((symbol-function 'appkit-media-inline-image-rendering-available-p)
                 (lambda (&rest _arguments) t))
-               ((symbol-function 'misskey-auth--ensure-token)
-                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey--authenticated-account)
+                #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
                 (lambda (_endpoint _parameters callback &rest _options)
                   (funcall
@@ -603,13 +667,330 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
             (setq view (call-interactively #'misskey-home)
                   buffer (appkit-view-buffer view))
             (misskey-timeline-test--flush view)
-            (with-current-buffer buffer
-              (should
-               (appkit-task-queue-pending-p
-                misskey-timeline--avatar-queue)))
+            (let ((entry
+                   (gethash
+                    (list :avatar avatar-url)
+                    (appkit-app-resource-store (appkit-view-app view)))))
+              (should (eq (plist-get entry :status) 'pending))
+              (should (plist-get entry :handle)))
             (appkit-kill-view view t)
+            (should (= cancellations 0))
+            (misskey-stop)
             (should (= cancellations 1))))
       (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-media-renders-audio-as-accessible-action-row ()
+  (let* ((misskey-timeline-show-media t)
+         (file '((id . "audio-1")
+                 (name . "track.mp3")
+                 (type . "audio/mpeg")
+                 (url . "https://cdn.example/track.mp3")))
+         (note (misskey-timeline-test--note
+                "n1" "audio" :files (list file))))
+    (should (equal (misskey-note-media-files note) (list file)))
+    (with-temp-buffer
+      (misskey-media-insert-file nil file "" nil nil)
+      (should (string-match-p "\\[audio\\]" (buffer-string)))
+      (should (keymapp (get-text-property (point-min) 'keymap)))
+      (should (equal (get-text-property (point-min) 'help-echo)
+                     "Open Misskey media")))))
+
+(ert-deftest misskey-media-renders-disabled-preview-placeholder ()
+  (let ((misskey-timeline-show-media nil)
+        (file (misskey-timeline-test--file "disabled")))
+    (with-temp-buffer
+      (misskey-media-insert-file nil file "" nil nil)
+      (should (string-match-p "\\[preview disabled\\]"
+                              (buffer-string))))))
+
+(ert-deftest misskey-media-renders-failed-preview-until-refresh ()
+  (let ((misskey-timeline-show-media t)
+        (file (misskey-timeline-test--file "failed")))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'appkit-view-live-p)
+                 (lambda (_view) t))
+                ((symbol-function 'misskey-media--entry)
+                 (lambda (_view _key) '(:status failed)))
+                ((symbol-function 'misskey-media-preview-image)
+                 (lambda (_view _file) nil)))
+        (misskey-media-insert-file 'view file "" nil nil))
+      (should (string-match-p "\\[preview failed; refresh to retry\\]"
+                              (buffer-string))))))
+
+
+(ert-deftest misskey-media-presents-generic-drive-files-as-open-actions ()
+  (let* ((pdf '((id . "pdf-1")
+                (name . "manual.pdf")
+                (type . "application/pdf")
+                (url . "https://cdn.example/manual.pdf")))
+         (archive '((id . "zip-1")
+                    (name . "bundle.zip")
+                    (type . "application/zip")
+                    (url . "https://cdn.example/bundle.zip")))
+         (note (misskey-timeline-test--note
+                "n1" "files" :files (list pdf archive))))
+    (should (equal (list pdf archive) (misskey-note-media-files note)))
+    (dolist (file (list pdf archive))
+      (should-not (misskey-file-preview-url file))
+      (with-temp-buffer
+        (misskey-media-insert-file nil file "" nil nil)
+        (should (keymapp (get-text-property (point-min) 'keymap)))
+        (should (equal "Open Misskey media"
+                       (get-text-property (point-min) 'help-echo)))
+        (should-not (string-match-p "loading preview" (buffer-string)))))))
+
+(ert-deftest misskey-media-rejects-unsafe-https-boundary-values ()
+  (let ((urls
+         (list
+          "http://cdn.example/manual.pdf"
+          "https://user@cdn.example/manual.pdf"
+          (concat "https://cdn.example/manual.pdf\""
+                  "\n--output /tmp/injected")))
+        dispatched)
+    (cl-letf (((symbol-function 'appkit-media-open-resource)
+               (lambda (&rest _)
+                 (setq dispatched t)))
+              ((symbol-function 'appkit-view-live-p)
+               (lambda (_view) t))
+              ((symbol-function 'misskey-media--cache-base)
+               (lambda (&rest _)
+                 (setq dispatched t))))
+      (dolist (url urls)
+        (let ((file `((id . "pdf-1")
+                      (name . "manual.pdf")
+                      (type . "application/pdf")
+                      (url . ,url))))
+          (should-not (misskey-file-original-url file))
+          (should-error
+           (misskey-media-open-file 'view file)
+           :type 'user-error)
+          (should-not
+           (misskey-media-request-resource
+            'view '(:media "pdf-1") url "media"))))
+      (let* ((malicious (car (last urls)))
+             (preview `((type . "image/png")
+                        (thumbnailUrl . ,malicious)))
+             (note
+              (misskey-timeline-test--note
+               "n1" "avatar" :avatar-url malicious)))
+        (should-not (misskey-file-preview-url preview))
+        (should-not (misskey-note-avatar-url note)))
+      (should-not dispatched))))
+
+(ert-deftest misskey-media-open-uses-original-not-distinct-thumbnail-cache ()
+  (let* ((file (misskey-timeline-test--file "original"))
+         (thumbnail (alist-get 'thumbnailUrl file))
+         (original (alist-get 'url file))
+         (entry `(:status ready :source ,thumbnail :file "/tmp/thumbnail"))
+         opened-resource)
+    (cl-letf (((symbol-function 'misskey-media--entry)
+               (lambda (_view _key) entry))
+              ((symbol-function 'appkit-media-open-resource)
+               (lambda (resource &rest _)
+                 (setq opened-resource resource))))
+      (misskey-media-open-file 'view file)
+      (should (equal original (alist-get 'url opened-resource)))
+      (should-not (alist-get 'file opened-resource))
+      (setf (plist-get entry :source) original
+            (plist-get entry :file) "/tmp/original")
+      (misskey-media-open-file 'view file)
+      (should (equal "/tmp/original"
+                     (alist-get 'file opened-resource))))))
+
+(ert-deftest misskey-media-shared-retry-invalidates-all-live-views ()
+  (let* ((app (appkit-start-app 'misskey :id 'media-retry
+                                :shutdown #'ignore))
+         (first-buffer (generate-new-buffer " *misskey-media-first*"))
+         (second-buffer (generate-new-buffer " *misskey-media-second*"))
+         first-view
+         second-view
+         callbacks
+         invalidated)
+    (unwind-protect
+        (progn
+          (with-current-buffer first-buffer
+            (setq first-view
+                  (appkit-attach-view
+                   :app app :id 'first :mode major-mode)))
+          (with-current-buffer second-buffer
+            (setq second-view
+                  (appkit-attach-view
+                   :app app :id 'second :mode major-mode)))
+          (cl-letf
+              (((symbol-function 'appkit-media-image-cache-existing-file)
+                (lambda (_cache-base) nil))
+               ((symbol-function 'appkit-media-cache-image-resource-async)
+                (lambda (_resource _cache-base success error &rest _)
+                  (push (cons success error) callbacks)
+                  nil))
+               ((symbol-function 'appkit-media-file-present-p)
+                (lambda (file) (equal file "/tmp/retry-ready.png")))
+               ((symbol-function 'appkit-request-sync)
+                (lambda (view &rest _)
+                  (cl-pushnew view invalidated :test #'eq))))
+            (misskey-media-request-resource
+             first-view '(:media "shared")
+             "https://cdn.example/shared.png" "media")
+            (funcall (cdr (car callbacks)) "failed")
+            (setq invalidated nil)
+            (misskey-media-request-resource
+             first-view '(:media "shared")
+             "https://cdn.example/shared.png" "media")
+            (should (= 2 (length invalidated)))
+            (should (memq first-view invalidated))
+            (should (memq second-view invalidated))
+            (setq invalidated nil)
+            (funcall (car (car callbacks)) "/tmp/retry-ready.png")
+            (should (= 2 (length invalidated)))
+            (should (memq first-view invalidated))
+            (should (memq second-view invalidated))))
+      (when (appkit-app-live-p app)
+        (appkit-stop-app app))
+      (when (buffer-live-p first-buffer)
+        (kill-buffer first-buffer))
+      (when (buffer-live-p second-buffer)
+        (kill-buffer second-buffer)))))
+(defun misskey-timeline-test--isolated-app ()
+  "Return an isolated live app for renderer state tests."
+  (let ((account
+         (misskey--account-create
+          :origin "https://example.social"
+          :auth-source-user "TOKEN"
+          :remote-user-id "self")))
+    (appkit-start-app
+     'misskey :id (list 'timeline-test (make-symbol "app"))
+     :state (misskey--make-session account))))
+
+(ert-deftest misskey-note-pure-renote-rejects-file-only-quotes ()
+  (let* ((target
+          (misskey-timeline-test--note
+           "target" "target body" :name "Bob" :username "bob"))
+         (wrapper
+          (misskey-timeline-test--note
+           "wrapper" nil :renote target :name "Alice" :username "alice"))
+         (file-quote
+          (misskey-timeline-test--note
+           "quote" nil :renote target
+           :files (list (misskey-timeline-test--file "file"))
+           :name "Carol" :username "carol")))
+    (should (misskey-note-pure-renote-p wrapper))
+    (should (eq (misskey-note-display-note wrapper) target))
+    (should-not (misskey-note-quoted-note wrapper))
+    (should-not (misskey-note-pure-renote-p file-quote))
+    (should (eq (misskey-note-display-note file-quote) file-quote))
+    (should (eq (misskey-note-quoted-note file-quote) target))))
+
+(ert-deftest misskey-render-author-properties-belong-to-visible-spans ()
+  (let* ((app (misskey-timeline-test--isolated-app))
+         (account (misskey--session-account (misskey--session app)))
+         (target
+          (misskey-timeline-test--note
+           "target" "target body" :name "Bob" :username "bob"))
+         (wrapper
+          (misskey-timeline-test--note
+           "wrapper" nil :renote target :name "Alice" :username "alice"))
+         (quote
+          (misskey-timeline-test--note
+           "quote" nil :renote target
+           :files (list (misskey-timeline-test--file "file"))
+           :name "Carol" :username "carol"))
+         view)
+    (unwind-protect
+        (with-temp-buffer
+          (setq view
+                (appkit-attach-view
+                 :app app :id 'authors :mode major-mode
+                 :state
+                 (list :account account
+                       :revealed-content (make-hash-table :test #'equal))))
+          (cl-letf (((symbol-function 'misskey-media-avatars-enabled-p)
+                     (lambda () nil))
+                    ((symbol-function 'misskey-media-insert-note-files)
+                     #'ignore))
+            (appkit-discussion-insert-entry
+             (misskey-render-note-entry view wrapper)
+             :avatar-p nil)
+            (appkit-discussion-insert-entry
+             (misskey-render-note-entry view quote)
+             :avatar-p nil))
+          (goto-char (point-min))
+          (search-forward "Alice @alice")
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-alice"))
+          (search-forward "Bob @bob")
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-bob"))
+          (should
+           (equal
+            (save-excursion
+              (goto-char (1- (point)))
+              (misskey-user-id (misskey-actions--user-at-point)))
+            "u-bob"))
+          (search-forward "Carol @carol")
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-carol"))
+          (search-forward "Quoting Bob @bob")
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-bob"))
+          (should
+           (equal
+            (save-excursion
+              (goto-char (1- (point)))
+              (misskey-user-id (misskey-actions--user-at-point)))
+            "u-bob"))
+          (search-forward "target body")
+          (should-not
+           (get-text-property (1- (point)) misskey-user-property))
+          (should
+           (eq (get-text-property
+                (1- (point)) misskey-note-property)
+               quote)))
+      (when (appkit-app-live-p app)
+        (appkit-stop-app app)))))
+
+(ert-deftest misskey-render-deletion-propagates-into-nested-renotes ()
+  (let* ((app (misskey-timeline-test--isolated-app))
+         (target
+          (misskey-timeline-test--note
+           "target" "deleted nested body" :name "Bob" :username "bob"))
+         (wrapper
+          (misskey-timeline-test--note
+           "wrapper" nil :renote target :name "Alice" :username "alice"))
+         (quote
+          (misskey-timeline-test--note
+           "quote" "outer survives" :renote target
+           :name "Carol" :username "carol"))
+         (rows nil))
+    (unwind-protect
+        (progn
+          (misskey-set-note-state-values app "target" :deleted-p t)
+          (setq rows (misskey-render-project-notes (list wrapper quote) app))
+          (should
+           (equal (mapcar #'appkit-projection-row-key rows) '("quote")))
+          (with-temp-buffer
+            (let ((view
+                   (appkit-attach-view
+                    :app app :id 'deletion :mode major-mode
+                    :state
+                    (list :account
+                          (misskey--session-account (misskey--session app))
+                          :revealed-content
+                          (make-hash-table :test #'equal)))))
+              (cl-letf (((symbol-function 'misskey-media-avatars-enabled-p)
+                         (lambda () nil))
+                        ((symbol-function 'misskey-media-insert-note-files)
+                         #'ignore))
+                (appkit-discussion-insert-entry
+                 (misskey-render-note-entry view quote) :avatar-p nil))
+              (should (string-match-p "outer survives" (buffer-string)))
+              (should-not
+               (string-match-p "deleted nested body" (buffer-string))))))
+      (when (appkit-app-live-p app)
+        (appkit-stop-app app)))))
 
 (provide 'misskey-timeline-test)
 

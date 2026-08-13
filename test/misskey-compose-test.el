@@ -8,20 +8,32 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'misskey-compose)
+(require 'misskey-test-helper
+         (expand-file-name
+          "misskey-test-helper"
+          (file-name-directory
+           (or load-file-name
+               (and (boundp 'byte-compile-current-file)
+                    byte-compile-current-file)
+               buffer-file-name))))
 
 (defmacro misskey-compose-test--with-buffer (&rest body)
   "Run BODY in a configured temporary Misskey compose buffer."
   (declare (indent 0) (debug t))
-  `(let ((misskey-instance-url "https://example.social"))
-     (with-temp-buffer
-       (misskey-compose-mode)
-       (setq-local misskey-compose-items (list nil))
-       (appkit-compose-setup
-        :context-function #'misskey-compose--context
-        :status-fields-function #'misskey-compose--status-fields
-        :parts-function #'misskey-compose--parts
-        :footer-function #'misskey-compose--footer)
-       ,@body)))
+  (let ((buffer (make-symbol "buffer")))
+    `(let ((misskey-instance-url "https://example.social")
+           (,buffer (generate-new-buffer " *misskey-compose-test*")))
+       (unwind-protect
+           (with-current-buffer ,buffer
+             (misskey-compose-mode)
+             (appkit-compose-setup
+              :context-function #'misskey-compose--context
+              :status-fields-function #'misskey-compose--status-fields
+              :parts-function #'misskey-compose--parts
+              :footer-function #'misskey-compose--footer)
+             ,@body)
+         (when (buffer-live-p ,buffer)
+           (kill-buffer ,buffer))))))
 
 (ert-deftest misskey-compose-renders-generated-public-note-shell ()
   (misskey-compose-test--with-buffer
@@ -36,14 +48,14 @@
     (insert "hello")
     (should (equal (appkit-compose-body) "hello"))))
 
-(ert-deftest misskey-compose-send-publishes-public-text-and-closes-on-id ()
+(ert-deftest misskey-compose-send-publishes-with-draft-view-owner ()
   (misskey-compose-test--with-buffer
-    (let ((buffer (current-buffer)) captured)
+    (let ((buffer (current-buffer))
+          (owner (appkit-current-view))
+          captured)
       (goto-char (appkit-compose-body-start-position))
       (insert " hello world ")
-      (cl-letf (((symbol-function 'misskey-app)
-                 (lambda (&optional _account) 'owner))
-                ((symbol-function 'misskey-http-post)
+      (cl-letf (((symbol-function 'misskey-http-post)
                  (lambda (endpoint parameters callback &rest options)
                    (setq captured
                          (list endpoint parameters
@@ -51,10 +63,10 @@
                    (funcall callback
                             '((createdNote (id . "note-1")))))))
         (misskey-compose-send)
-        (should (equal captured
-                       '("notes/create"
-                         (:text " hello world " :visibility "public")
-                         owner)))
+        (should (equal (car captured) "notes/create"))
+        (should (equal (cadr captured)
+                       '(:text " hello world " :visibility "public")))
+        (should (eq (nth 2 captured) owner))
         (should-not (buffer-live-p buffer))))))
 
 (ert-deftest misskey-compose-send-keeps-draft-after-remote-failure ()
@@ -79,7 +91,8 @@
                (lambda (&optional _account) 'owner))
               ((symbol-function 'message) #'ignore)
               ((symbol-function 'misskey-http-post)
-               (lambda (&rest _) 'request-buffer)))
+               (lambda (&rest _) 'request-buffer))
+              ((symbol-function 'misskey-http-cancel) #'ignore))
       (misskey-compose-send)
       (should (appkit-compose-submitting-p))
       (should (string-match-p "State: Publishing"
@@ -88,7 +101,8 @@
                               (appkit-compose-display-string)))
       (should (equal (appkit-compose-body) "pending"))
       (goto-char (appkit-compose-body-start-position))
-      (should-error (delete-char 1)))))
+      (should-error (delete-char 1))
+      (appkit-compose-cancel-submit))))
 
 (ert-deftest misskey-compose-send-restores-state-after-synchronous-error ()
   (misskey-compose-test--with-buffer
@@ -107,32 +121,24 @@
       (insert " again")
       (should (equal (appkit-compose-body) "recover again")))))
 
-(ert-deftest misskey-compose-success-without-note-id-keeps-draft ()
+(ert-deftest misskey-compose-success-without-note-id-is-unknown-and-editable ()
   (misskey-compose-test--with-buffer
     (goto-char (appkit-compose-body-start-position))
     (insert "unconfirmed")
-    (cl-letf (((symbol-function 'misskey-app)
-               (lambda (&optional _account) 'owner))
-              ((symbol-function 'message) #'ignore)
-              ((symbol-function 'misskey-http-post)
-               (lambda (_endpoint _parameters callback &rest _)
-                 (funcall callback '((createdNote))))))
-      (misskey-compose-send)
-      (should-not (appkit-compose-submitting-p))
-      (should (equal (appkit-compose-body) "unconfirmed"))
-      (goto-char (appkit-compose-body-end-position))
-      (insert " again")
-      (should (equal (appkit-compose-body) "unconfirmed again")))))
-
-(ert-deftest misskey-compose-error-still-reports-after-buffer-dies ()
-  (let ((buffer (generate-new-buffer " *misskey-compose-dead*"))
-        reported)
-    (kill-buffer buffer)
-    (cl-letf (((symbol-function 'message)
-               (lambda (format-string &rest args)
-                 (setq reported (apply #'format format-string args)))))
-      (misskey-compose--handle-error buffer "unknown outcome")
-      (should (equal reported "unknown outcome")))))
+    (let (reported)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq reported (apply #'format format-string args))))
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint _parameters callback &rest _)
+                   (funcall callback '((createdNote))))))
+        (misskey-compose-send)
+        (should (string-match-p "outcome is unknown" reported))
+        (should-not (appkit-compose-submitting-p))
+        (should (equal (appkit-compose-body) "unconfirmed"))
+        (goto-char (appkit-compose-body-end-position))
+        (insert " again")
+        (should (equal (appkit-compose-body) "unconfirmed again"))))))
 
 (ert-deftest misskey-compose-send-rejects-empty-and-duplicate-send ()
   (misskey-compose-test--with-buffer
@@ -200,10 +206,287 @@
                        "note-1"))
         (should-not (buffer-live-p buffer))))))
 
+(ert-deftest misskey-compose-send-preserves-reply-target-and-visibility ()
+  (misskey-compose-test--with-buffer
+    (let (captured)
+      (setq-local misskey-compose-reply-id "parent")
+      (setq-local misskey-compose-target-label "@alice")
+      (misskey-compose-set-visibility 'followers)
+      (goto-char (appkit-compose-body-start-position))
+      (insert "reply")
+      (cl-letf (((symbol-function 'misskey-app)
+                 (lambda (&optional _account) 'owner))
+                ((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint parameters callback &rest _)
+                   (setq captured parameters)
+                   (funcall callback '((createdNote (id . "reply-1")))))))
+        (misskey-compose-send)
+        (should
+         (equal captured
+                '(:text "reply" :visibility "followers"
+                  :replyId "parent")))))))
+
+(ert-deftest misskey-compose-send-preserves-quote-target ()
+  (misskey-compose-test--with-buffer
+    (let (captured)
+      (setq-local misskey-compose-renote-id "quoted")
+      (goto-char (appkit-compose-body-start-position))
+      (insert "comment")
+      (cl-letf (((symbol-function 'misskey-app)
+                 (lambda (&optional _account) 'owner))
+                ((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint parameters callback &rest _)
+                   (setq captured parameters)
+                   (funcall callback '((createdNote (id . "quote-1")))))))
+        (misskey-compose-send)
+        (should (equal captured
+                       '(:text "comment" :visibility "public"
+                         :renoteId "quoted")))))))
+
 (ert-deftest misskey-compose-cancel-refuses-inflight-write ()
   (misskey-compose-test--with-buffer
     (appkit-compose-begin-submit :label "Publishing")
     (should-error (misskey-compose-cancel) :type 'user-error)))
+
+(ert-deftest misskey-compose-uploads-once-and-reuses-drive-file-after-failure ()
+  (let ((file (make-temp-file "misskey-compose-attachment-")))
+    (unwind-protect
+        (misskey-compose-test--with-buffer
+          (let ((buffer (current-buffer))
+                (uploads 0)
+                (posts 0)
+                captured)
+            (goto-char (appkit-compose-body-start-position))
+            (insert "with attachment")
+            (misskey-compose-attach-file file)
+            (cl-letf (((symbol-function 'misskey-app)
+                       (lambda (&optional _account) 'owner))
+                      ((symbol-function 'message) #'ignore)
+                      ((symbol-function 'misskey-http-upload-file)
+                       (lambda (_file callback &rest _options)
+                         (setq uploads (1+ uploads))
+                         (funcall callback '((id . "drive-1")))))
+                      ((symbol-function 'misskey-http-post)
+                       (lambda (_endpoint parameters callback &rest options)
+                         (setq posts (1+ posts)
+                               captured parameters)
+                         (if (= posts 1)
+                             (funcall (plist-get options :errback)
+                                      "unknown outcome")
+                           (funcall callback
+                                    '((createdNote (id . "note-1"))))))))
+              (misskey-compose-send)
+              (should (buffer-live-p buffer))
+              (should (= uploads 1))
+              (should
+               (equal
+                (plist-get
+                 (car
+                  (plist-get (car (appkit-compose-items)) :attachments))
+                 :drive-id)
+                "drive-1"))
+              (misskey-compose-send)
+              (should (= uploads 1))
+              (should (= posts 2))
+              (should (equal (plist-get captured :fileIds)
+                             ["drive-1"]))
+              (should-not (buffer-live-p buffer)))))
+      (delete-file file))))
+
+(ert-deftest misskey-compose-allows-attachment-only-note ()
+  (let ((file (make-temp-file "misskey-compose-file-only-")))
+    (unwind-protect
+        (misskey-compose-test--with-buffer
+          (let (parameters)
+            (misskey-compose-attach-file file)
+            (cl-letf (((symbol-function 'misskey-app)
+                       (lambda (&optional _account) 'owner))
+                      ((symbol-function 'message) #'ignore)
+                      ((symbol-function 'misskey-http-upload-file)
+                       (lambda (_file callback &rest _options)
+                         (funcall callback '((id . "drive-2")))))
+                      ((symbol-function 'misskey-http-post)
+                       (lambda (_endpoint value callback &rest _options)
+                         (setq parameters value)
+                         (funcall callback
+                                  '((createdNote (id . "note-2")))))))
+              (misskey-compose-send)
+              (should-not (plist-member parameters :text))
+              (should (equal (plist-get parameters :fileIds)
+                             ["drive-2"])))))
+      (delete-file file))))
+
+(ert-deftest misskey-compose-persists-confirmed-prefix-before-retry ()
+  (misskey-compose-test--with-buffer
+    (let ((buffer (current-buffer))
+          (post-count 0)
+          requests)
+      (setq-local misskey-compose-renote-id "quoted"
+                  misskey-compose-target-label "@source")
+      (goto-char (appkit-compose-body-start-position))
+      (insert "first")
+      (misskey-compose-add-note)
+      (insert "second")
+      (cl-letf (((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint parameters callback &rest options)
+                   (setq post-count (1+ post-count)
+                         requests (append requests (list parameters)))
+                   (pcase post-count
+                     (1 (funcall callback
+                                 '((createdNote (id . "note-1")))))
+                     (2 (funcall (plist-get options :errback)
+                                 "remote outcome is unknown"))
+                     (3 (funcall callback
+                                 '((createdNote (id . "note-2")))))))))
+        (misskey-compose-send)
+        (should (buffer-live-p buffer))
+        (should (equal (appkit-compose-bodies) '("second")))
+        (should (equal misskey-compose-reply-id "note-1"))
+        (should-not misskey-compose-renote-id)
+        (should-not misskey-compose-target-label)
+        (should-not (appkit-compose-submitting-p))
+        (misskey-compose-send)
+        (should (= post-count 3))
+        (should (equal (mapcar (lambda (parameters)
+                                (plist-get parameters :text))
+                              requests)
+                       '("first" "second" "second")))
+        (should (equal (plist-get (nth 1 requests) :replyId) "note-1"))
+        (should (equal (plist-get (nth 2 requests) :replyId) "note-1"))
+        (should-not (buffer-live-p buffer))))))
+
+(ert-deftest misskey-compose-cancel-stops-request-and-ignores-late-success ()
+  (misskey-compose-test--with-buffer
+    (let ((buffer (current-buffer))
+          callback
+          (posts 0)
+          (cancels 0))
+      (goto-char (appkit-compose-body-start-position))
+      (insert "keep")
+      (cl-letf (((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint _parameters success &rest _)
+                   (setq posts (1+ posts)
+                         callback success)
+                   'request))
+                ((symbol-function 'misskey-http-cancel)
+                 (lambda (request)
+                   (should (eq request 'request))
+                   (setq cancels (1+ cancels)))))
+        (misskey-compose-send)
+        (misskey-compose-cancel)
+        (should (= cancels 1))
+        (should-not (buffer-live-p buffer))
+        (funcall callback '((createdNote (id . "late"))))
+        (should (= posts 1))))))
+
+(ert-deftest misskey-compose-killed-buffer-stops-chain-and-ignores-callback ()
+  (misskey-compose-test--with-buffer
+    (let ((buffer (current-buffer))
+          callback
+          (posts 0)
+          (cancels 0))
+      (goto-char (appkit-compose-body-start-position))
+      (insert "first")
+      (misskey-compose-add-note)
+      (insert "second")
+      (cl-letf (((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint _parameters success &rest _)
+                   (setq posts (1+ posts)
+                         callback success)
+                   'request))
+                ((symbol-function 'misskey-http-cancel)
+                 (lambda (_request)
+                   (setq cancels (1+ cancels)))))
+        (misskey-compose-send)
+        (kill-buffer buffer)
+        (should (= cancels 1))
+        (funcall callback '((createdNote (id . "late"))))
+        (should (= posts 1))
+        (should-not (buffer-live-p buffer))))))
+
+(ert-deftest misskey-compose-missing-upload-id-is-unknown-and-editable ()
+  (let ((file (make-temp-file "misskey-compose-missing-id-")))
+    (unwind-protect
+        (misskey-compose-test--with-buffer
+          (misskey-compose-attach-file file)
+          (let (reported)
+            (cl-letf (((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (setq reported
+                               (apply #'format format-string args))))
+                      ((symbol-function 'misskey-http-upload-file)
+                       (lambda (_file callback &rest _)
+                         (funcall callback '((id . "")))))
+                      ((symbol-function 'misskey-http-post)
+                       (lambda (&rest _)
+                         (ert-fail "A note with an unconfirmed upload ran"))))
+              (misskey-compose-send)
+              (should (string-match-p "outcome is unknown" reported))
+              (should-not (appkit-compose-submitting-p))
+              (should-not buffer-read-only)
+              (should (= (length (plist-get (car (appkit-compose-items))
+                                             :attachments))
+                         1)))))
+      (delete-file file))))
+
+(ert-deftest misskey-compose-attachment-limit-counts-drive-and-local-files ()
+  (let ((file (make-temp-file "misskey-compose-limit-"))
+        (extra (make-temp-file "misskey-compose-limit-extra-")))
+    (unwind-protect
+        (misskey-compose-test--with-buffer
+          (let ((attachments
+                 (append
+                  (cl-loop for index below 8
+                           collect (list :path file
+                                         :drive-id (format "drive-%d" index)))
+                  (cl-loop repeat 8 collect (list :path file)))))
+            (appkit-compose-set-items
+             (list (list :text "" :attachments attachments)))
+            (should-error (misskey-compose-attach-file extra)
+                          :type 'user-error)))
+      (delete-file file)
+      (delete-file extra))))
+
+(ert-deftest misskey-compose-rejects-remote-attachment-paths ()
+  (misskey-compose-test--with-buffer
+    (let ((remote "/ssh:example.social:/tmp/image.png"))
+      (should-error (misskey-compose-attach-file remote) :type 'user-error)
+      (appkit-compose-set-items
+       (list (list :text "" :attachments (list (list :path remote)))))
+      (cl-letf (((symbol-function 'misskey-http-upload-file)
+                 (lambda (&rest _)
+                   (ert-fail "A remote attachment reached curl"))))
+        (should-error (misskey-compose-send) :type 'user-error)))))
+
+(ert-deftest misskey-compose-stale-callback-cannot-finish-retry ()
+  (misskey-compose-test--with-buffer
+    (let ((buffer (current-buffer))
+          callbacks
+          errbacks)
+      (goto-char (appkit-compose-body-start-position))
+      (insert "retry me")
+      (cl-letf (((symbol-function 'message) #'ignore)
+                ((symbol-function 'misskey-http-post)
+                 (lambda (_endpoint _parameters callback &rest options)
+                   (setq callbacks (append callbacks (list callback))
+                         errbacks
+                         (append errbacks
+                                 (list (plist-get options :errback))))
+                   (intern (format "request-%d" (length callbacks))))))
+        (misskey-compose-send)
+        (funcall (car errbacks) "remote outcome is unknown")
+        (misskey-compose-send)
+        (funcall (car callbacks) '((createdNote (id . "stale"))))
+        (should (buffer-live-p buffer))
+        (should (appkit-compose-submitting-p))
+        (should (equal (appkit-compose-body) "retry me"))
+        (funcall (cadr callbacks) '((createdNote (id . "confirmed"))))
+        (should-not (buffer-live-p buffer))))))
 
 (provide 'misskey-compose-test)
 

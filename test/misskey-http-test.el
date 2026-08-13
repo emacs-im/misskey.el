@@ -8,6 +8,14 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'misskey-http)
+(require 'misskey-test-helper
+         (expand-file-name
+          "misskey-test-helper"
+          (file-name-directory
+           (or load-file-name
+               (and (boundp 'byte-compile-current-file)
+                    byte-compile-current-file)
+               buffer-file-name))))
 
 (ert-deftest misskey-http-endpoint-url-keeps-api-under-origin ()
   (let ((misskey-instance-url "https://example.social"))
@@ -50,260 +58,195 @@
      (misskey-http--decode-response
       (make-plz-response :status 200 :body "12345") nil))))
 
-(ert-deftest misskey-http-post-uses-safe-plz-profile-and-bearer-json ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-test")))
-         (process (make-pipe-process
-                   :name "misskey-http-test" :noquery t))
-         captured callback-value request)
-    (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
-                   (lambda (method url &rest arguments)
-                     (setq captured
-                           (list :method method
-                                 :url url
-                                 :arguments arguments
-                                 :curl-args
-                                 (copy-sequence plz-curl-default-args)))
-                     process)))
-          (setq request
-                (misskey-http-post
-                 "notes/create" '(:text "hello" :visibility "public")
-                 (lambda (payload) (setq callback-value payload))
-                 :errback #'ert-fail :owner owner))
-          (let* ((arguments (plist-get captured :arguments))
-                 (headers (plist-get arguments :headers))
-                 (data (plist-get arguments :body)))
-            (should (misskey-http--request-p request))
-            (should (eq (plist-get captured :method) 'post))
-            (should (equal (plist-get captured :url)
-                           "https://example.social/api/notes/create"))
-            (should (equal (plist-get captured :curl-args)
-                           misskey-http--curl-args))
-            (should (equal (cdr (assoc "Authorization" headers))
-                           "Bearer SECRET"))
-            (should (equal (cdr (assoc "Content-Type" headers))
-                           "application/json"))
-            (should (eq (plist-get arguments :body-type) 'binary))
-            (should (eq (plist-get arguments :as) 'response))
-            (should (plist-get arguments :decode))
-            (should (plist-get arguments :noquery))
-            (should (equal
-                     (json-parse-string
-                      (decode-coding-string data 'utf-8)
-                      :object-type 'alist)
-                     '((text . "hello") (visibility . "public"))))
-            (should-not (string-match-p "SECRET" data))
-            (should (= (length (appkit-app-handles owner)) 1))
-            (funcall
-             (plist-get arguments :then)
-             (make-plz-response
-              :status 200
-              :body "{\"createdNote\":{\"id\":\"note-1\"}}"))
-            (should (equal callback-value
-                           '((createdNote (id . "note-1")))))
-            (should-not (appkit-app-handles owner))
-            (should (misskey-http--request-settled-p request))))
-      (when (process-live-p process)
-        (delete-process process))
-      (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+(ert-deftest misskey-http-serializes-explicit-json-sentinels-and-vectors ()
+  (should
+   (equal
+    (misskey-http--json-data
+     '(:false :json-false :null :json-null :ids ["a" "b"]))
+    "{\"false\":false,\"null\":null,\"ids\":[\"a\",\"b\"]}")))
 
-(ert-deftest misskey-http-read-decodes-plz-http-error-without-uncertainty ()
+(ert-deftest misskey-http-rejects-hostile-token-before-curl-config ()
   (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-read")))
-         (process (make-pipe-process
-                   :name "misskey-http-read-test" :noquery t))
-         arguments failure)
-    (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
-                   (lambda (_method _url &rest options)
-                     (setq arguments options)
-                     process)))
-          (misskey-http-read
-           "notes/timeline" '(:limit 20) #'ignore
-           :errback (lambda (message) (setq failure message))
-           :owner owner)
-          (funcall
-           (plist-get arguments :else)
-           (make-plz-error
-            :response
-            (make-plz-response
-             :status 400
-             :body "{\"error\":{\"message\":\"Denied\",\"code\":\"NO_PERMISSION\"}}")))
-          (should (string-match-p "HTTP 400" failure))
-          (should (string-match-p "Denied (NO_PERMISSION)" failure))
-          (should-not (string-match-p "unknown" failure))
-          (should-not (appkit-app-handles owner)))
-      (when (process-live-p process)
-        (delete-process process))
-      (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
-
-(ert-deftest misskey-http-missing-curl-is-certain-setup-failure ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-setup")))
+         (owner (appkit-start-app 'misskey :id (make-symbol "hostile-token")))
+         (started-p nil)
          failure)
     (unwind-protect
         (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) nil))
+                   (lambda (_program) "/usr/bin/curl"))
                   ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
+                   (lambda (&optional _account)
+                     "safe\"\nheader = \"X-Evil: yes"))
+                  ((symbol-function 'make-process)
                    (lambda (&rest _)
-                     (ert-fail "Plz must not start without curl"))))
+                     (setq started-p t)
+                     (ert-fail "Hostile token reached curl"))))
           (misskey-http-post
            "notes/create" '(:text "hello") #'ignore
            :errback (lambda (message) (setq failure message))
            :owner owner)
-          (should (string-match-p "curl executable is unavailable" failure))
-          (should-not (string-match-p "unknown" failure))
-          (should-not (appkit-app-handles owner)))
+          (should-not started-p)
+          (should (string-match-p "invalid" failure))
+          (should-not (string-match-p "X-Evil" failure)))
       (when (appkit-app-live-p owner)
         (appkit-stop-app owner)))))
 
-(ert-deftest misskey-http-redacts-token-from-post-dispatch-errors ()
+(ert-deftest misskey-http-redacts-secret-from-delivered-errors ()
+  (let (failure)
+    (misskey-http--deliver
+     (misskey-http--request-create
+      :callback #'ert-fail
+      :errback (lambda (message) (setq failure message))
+      :writep t
+      :token "SECRET")
+     '(error . "Server reflected SECRET"))
+    (should (string-match-p "\\[REDACTED\\]" failure))
+    (should-not (string-match-p "SECRET" failure))))
+
+(ert-deftest misskey-http-post-dispatch-errors-are-unknown-and-redacted ()
   (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-error")))
+         (owner (appkit-start-app 'misskey :id (make-symbol "post-error")))
          failure)
     (unwind-protect
         (cl-letf (((symbol-function 'executable-find)
                    (lambda (_program) "/usr/bin/curl"))
                   ((symbol-function 'misskey--auth-token)
                    (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
-                   (lambda (&rest _)
-                     (error "Transport exposed SECRET"))))
+                  ((symbol-function 'misskey-http--start-curl)
+                   (lambda (request &rest _)
+                     (setf (misskey-http--request-dispatched-p request) t)
+                     (error "send failed with SECRET"))))
           (misskey-http-post
            "notes/create" '(:text "hello") #'ignore
            :errback (lambda (message) (setq failure message))
            :owner owner)
           (should (string-match-p "unknown" failure))
           (should (string-match-p "\\[REDACTED\\]" failure))
-          (should-not (string-match-p "SECRET" failure))
-          (should-not (appkit-app-handles owner)))
+          (should-not (string-match-p "SECRET" failure)))
       (when (appkit-app-live-p owner)
         (appkit-stop-app owner)))))
 
-(ert-deftest misskey-http-app-stop-reports-unknown-outcome-once ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-cancel")))
-         (process (make-pipe-process
-                   :name "misskey-http-cancel-test" :noquery t))
-         arguments request message
-         (calls 0))
+(ert-deftest misskey-http-auth-config-keeps-token-off-command-line ()
+  (let ((file (make-temp-file "misskey-http-command-")))
     (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
-                   (lambda (_method _url &rest options)
-                     (setq arguments options)
-                     process)))
-          (setq request
-                (misskey-http-post
-                 "notes/create" '(:text "hello") #'ignore
-                 :errback (lambda (failure)
-                            (setq calls (1+ calls)
-                                  message failure))
-                 :owner owner))
-          (appkit-stop-app owner)
-          (should (= calls 1))
-          (should (string-match-p "unknown" message))
-          (should-not (process-live-p process))
-          (should-not (appkit-app-handles owner))
-          (should (misskey-http--request-settled-p request))
-          (funcall (plist-get arguments :else)
-                   (make-plz-error :message "curl process killed"))
-          (should (= calls 1)))
+        (let ((command
+               (misskey-http--upload-command
+                "https://example.social/api/drive/files/create" file)))
+          (should-not (string-match-p "SECRET" (prin1-to-string command)))
+          (should (equal (misskey-http--curl-authorization-config "SECRET")
+                         "header = \"Authorization: Bearer SECRET\"\n"))
+          (dolist (hostile
+                   '("" "x\nheader=x" "x\"y" "x\\y" "x y" "--config"))
+            (should-error
+             (misskey-http--curl-authorization-config hostile))))
+      (delete-file file))))
+
+(ert-deftest misskey-http-stream-filter-caps-body-at-next-byte ()
+  (let* ((misskey-http--response-limit 8)
+         (buffer (generate-new-buffer " *misskey-cap-test*"))
+         failure
+         (request
+          (misskey-http--request-create
+           :callback #'ert-fail
+           :errback (lambda (message) (setq failure message))
+           :writep t
+           :buffers (list buffer)))
+         (process
+          (make-process :name "misskey-cap-test" :command '("cat")
+                        :buffer buffer :noquery t)))
+    (setf (misskey-http--request-process request) process)
+    (misskey-http--response-filter
+     request process "HTTP/1.1 200 OK\r\nX: y\r\n\r\n12345678")
+    (should (= (buffer-size buffer) 8))
+    (misskey-http--response-filter request process "9")
+    (should (misskey-http--request-settled-p request))
+    (should-not (process-live-p process))
+    (should-not (buffer-live-p buffer))
+    (should (string-match-p "unknown" failure))))
+
+(ert-deftest misskey-http-stream-filter-bounds-hostile-single-chunks ()
+  (dolist (output
+           (list
+            (make-string 100000 ?x)
+            (concat "HTTP/1.1 200 OK\r\n\r\n" (make-string 100000 ?x))))
+    (let* ((misskey-http--header-limit 32)
+           (misskey-http--response-limit 8)
+           (buffer (generate-new-buffer " *misskey-hostile-chunk*"))
+           failure
+           (request
+            (misskey-http--request-create
+             :callback #'ert-fail
+             :errback (lambda (message) (setq failure message))
+             :writep nil
+             :buffers (list buffer)))
+           (process
+            (make-process :name "misskey-hostile-chunk" :command '("cat")
+                          :buffer buffer :coding 'binary :noquery t)))
+      (with-current-buffer buffer
+        (set-buffer-multibyte nil))
+      (setf (misskey-http--request-process request) process)
+      (misskey-http--response-filter request process output)
+      (should failure)
+      (should-not (process-live-p process))
+      (should-not (buffer-live-p buffer)))))
+
+(ert-deftest misskey-http-stream-filter-does-not-count-body-as-headers ()
+  (let* ((misskey-http--header-limit 32)
+         (misskey-http--response-limit 100)
+         (buffer (generate-new-buffer " *misskey-header-test*"))
+         (request
+          (misskey-http--request-create
+           :callback #'ignore :errback #'ert-fail :writep nil))
+         (process
+          (make-process :name "misskey-header-test" :command '("cat")
+                        :buffer buffer :noquery t)))
+    (unwind-protect
+        (progn
+          (misskey-http--response-filter
+           request process
+           (concat "HTTP/1.1 200 OK\r\n\r\n" (make-string 64 ?x)))
+          (should (= (buffer-size buffer) 64))
+          (should (= (process-get process 'misskey-http-status) 200)))
       (when (process-live-p process)
         (delete-process process))
-      (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
-(ert-deftest misskey-http-cancel-retires-read-once ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "http-read-cancel")))
-         (process (make-pipe-process
-                   :name "misskey-http-read-cancel-test" :noquery t))
-         arguments request message
-         (calls 0))
+(ert-deftest misskey-http-stderr-filter-is-independently-bounded ()
+  (let* ((misskey-http--stderr-limit 4)
+         (buffer (generate-new-buffer " *misskey-stderr-test*"))
+         (process
+          (make-pipe-process :name "misskey-stderr-test"
+                             :buffer buffer :noquery t)))
     (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'plz)
-                   (lambda (_method _url &rest options)
-                     (setq arguments options)
-                     process)))
-          (setq request
-                (misskey-http-read
-                 "notes/timeline" '(:limit 20) #'ignore
-                 :errback (lambda (failure)
-                            (setq calls (1+ calls)
-                                  message failure))
-                 :owner owner))
-          (misskey-http-cancel request)
-          (should (= calls 1))
-          (should (string-match-p "canceled before a response" message))
-          (should-not (string-match-p "unknown" message))
-          (should-not (process-live-p process))
-          (should-not (appkit-app-handles owner))
-          (should (misskey-http--request-settled-p request))
-          (misskey-http-cancel request)
-          (funcall (plist-get arguments :else)
-                   (make-plz-error :message "curl process killed"))
-          (should (= calls 1)))
+        (progn
+          (misskey-http--stderr-filter process "123456")
+          (should (= (buffer-size buffer) 4))
+          (should (process-get process 'misskey-http-truncated)))
       (when (process-live-p process)
         (delete-process process))
-      (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
-(ert-deftest misskey-http-public-read-sync-sends-empty-json-object ()
-  (let ((misskey-instance-url "https://example.social")
-        captured)
-    (cl-letf (((symbol-function 'executable-find)
-               (lambda (_program) "/usr/bin/curl"))
-              ((symbol-function 'plz)
-               (lambda (method url &rest options)
-                 (setq captured
-                       (list :method method
-                             :url url
-                             :options options
-                             :curl-args
-                             (copy-sequence plz-curl-default-args)))
-                 (make-plz-response
-                  :status 200 :body "{\"ok\":true}"))))
-      (should
-       (equal
-        (misskey-http--public-read-sync
-         "miauth/session/check" (make-hash-table :test #'equal))
-        '((ok . t))))
-      (let* ((options (plist-get captured :options))
-             (headers (plist-get options :headers)))
-        (should (eq (plist-get captured :method) 'post))
-        (should
-         (equal (plist-get captured :url)
-                "https://example.social/api/miauth/session/check"))
-        (should (equal (plist-get captured :curl-args)
-                       misskey-http--curl-args))
-        (should (equal (plist-get options :body) "{}"))
-        (should (eq (plist-get options :body-type) 'binary))
-        (should (eq (plist-get options :as) 'response))
-        (should (eq (plist-get options :then) 'sync))
-        (should (plist-get options :decode))
-        (should (plist-get options :noquery))
-        (should-not (assoc "Authorization" headers))))))
+(ert-deftest misskey-http-partial-start-cleans-stderr-and-buffers ()
+  (let ((request
+         (misskey-http--request-create
+          :callback #'ignore :errback #'ignore :writep nil))
+        (real-make-process (symbol-function 'make-process))
+        created-stderr)
+    (cl-letf (((symbol-function 'make-pipe-process)
+               (lambda (&rest arguments)
+                 (setq created-stderr
+                       (apply real-make-process
+                              :command '("cat") arguments))))
+              ((symbol-function 'make-process)
+               (lambda (&rest _)
+                 (error "main process failed"))))
+      (should-error
+       (misskey-http--start-curl
+        request "curl" nil "" "" " *response*" " *stderr*"))
+      (should-not (process-live-p created-stderr))
+      (should-not (misskey-http--request-buffers request))
+      (should-not (misskey-http--request-stderr-process request)))))
 
 (provide 'misskey-http-test)
 

@@ -8,18 +8,26 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'misskey)
+(require 'misskey-test-helper
+         (expand-file-name
+          "misskey-test-helper"
+          (file-name-directory
+           (or load-file-name
+               (and (boundp 'byte-compile-current-file)
+                    byte-compile-current-file)
+               buffer-file-name))))
 
 (ert-deftest misskey-auth-builds-scoped-miauth-url ()
   (let* ((misskey-instance-url "https://example.social")
          (misskey-auth-source-user "alice")
-         (account (misskey--current-account))
+         (account (misskey--current-account-locator))
          (session "12345678-1234-4abc-8def-1234567890ab"))
     (should
      (equal
       (misskey-auth--authorization-url account session)
       (concat
        "https://example.social/miauth/12345678-1234-4abc-8def-1234567890ab"
-       "?name=misskey.el&permission=read:account,write:notes")))))
+       "?name=misskey.el&permission=read:account,read:notifications,write:notes,write:reactions,write:favorites,write:following,write:notifications,write:drive")))))
 
 (ert-deftest misskey-auth-session-id-uses-random-uuid-program ()
   (cl-letf (((symbol-function 'executable-find)
@@ -38,116 +46,164 @@
   (cl-letf (((symbol-function 'executable-find) (lambda (_program) nil)))
     (should-error (misskey-auth--session-id))))
 
-(ert-deftest misskey-authorize-runs-miauth-and-persists-token ()
+(ert-deftest misskey-auth-miauth-returns-token-and-stable-user-id ()
   (let ((misskey-instance-url "https://example.social")
-        (misskey-auth-source-user "alice")
-        (auth-sources '("/tmp/misskey-auth-test.gpg"))
-        (session "12345678-1234-4abc-8def-1234567890ab")
-        searches authorization-url prompt endpoint parameters request-account
-        creation-sources ignore-non-existing-p saved-p forgotten-spec)
+        (session "12345678-1234-4abc-8def-1234567890ab"))
     (cl-letf (((symbol-function 'misskey-auth--session-id)
                (lambda () session))
-              ((symbol-function 'browse-url)
-               (lambda (url &rest _)
-                 (setq authorization-url url)))
-              ((symbol-function 'read-string)
-               (lambda (text &rest _)
-                 (setq prompt text)
-                 ""))
-              ((symbol-function 'misskey-http--public-read-sync)
-               (lambda (requested-endpoint requested-parameters account)
-                 (setq endpoint requested-endpoint
-                       parameters requested-parameters
-                       request-account account)
-                 '((ok . t)
-                   (token . "NEW-TOKEN")
-                   (user (username . "alice")))))
-              ((symbol-function 'auth-source-search)
-               (lambda (&rest args)
-                 (push args searches)
-                 (when (or saved-p (plist-get args :create))
-                   (when (plist-get args :create)
-                     (setq creation-sources auth-sources
-                           ignore-non-existing-p
-                           auth-source-ignore-non-existing-file))
-                   (list
-                    (list :user "alice"
-                          :port "misskey"
-                          :secret (lambda () "NEW-TOKEN")
-                          :save-function (lambda () (setq saved-p t)))))))
-              ((symbol-function 'auth-source-forget)
-               (lambda (spec) (setq forgotten-spec spec)))
-              ((symbol-function 'message) #'ignore))
-      (should (equal (call-interactively #'misskey-authorize) "NEW-TOKEN"))
-      (should
-       (equal authorization-url
-              (concat
-               "https://example.social/miauth/" session
-               "?name=misskey.el&permission=read:account,write:notes")))
-      (should (string-match-p "press RET" prompt))
-      (should (equal endpoint (format "miauth/%s/check" session)))
-      (should (hash-table-p parameters))
-      (should (= (hash-table-count parameters) 0))
-      (should (equal (misskey--account-origin request-account)
-                     "https://example.social"))
-      (let ((create-spec
-             (cl-find-if (lambda (spec) (plist-get spec :create)) searches)))
-        (should create-spec)
-        (should (equal (plist-get create-spec :host) "example.social"))
-        (should (equal (plist-get create-spec :user) "alice"))
-        (should (equal (plist-get create-spec :port) "misskey"))
-        (should (equal (plist-get create-spec :secret) "NEW-TOKEN")))
-      (should saved-p)
-      (should (equal creation-sources
-                     '("/tmp/misskey-auth-test.gpg")))
-      (should-not ignore-non-existing-p)
-      (should
-       (equal forgotten-spec
-              '(:host "example.social" :user "alice" :port "misskey"
-                :require (:secret :port) :max 1))))))
-
-(ert-deftest misskey-auth-storage-source-selects-encrypted-file ()
-  (let ((auth-sources
-         '(password-store "~/.authinfo" "~/.authinfo.gpg")))
-    (should (equal (misskey-auth--storage-source) "~/.authinfo.gpg")))
-  (let ((auth-sources '(password-store "~/.authinfo")))
-    (should-error (misskey-auth--storage-source) :type 'user-error)))
-
-(ert-deftest misskey-authorize-reuses-stored-token-without-browser ()
-  (let ((misskey-instance-url "https://example.social")
-        (misskey-auth-source-user "alice"))
-    (cl-letf (((symbol-function 'misskey--stored-auth-token)
-               (lambda (&optional _account) "EXISTING"))
-              ((symbol-function 'misskey-auth--request-token)
-               (lambda (&rest _) (ert-fail "MiAuth must not start"))))
-      (should (equal (call-interactively #'misskey-authorize) "EXISTING")))))
-
-(ert-deftest misskey-auth-refuses-unapproved-session-before-storage ()
-  (let ((misskey-instance-url "https://example.social")
-        (misskey-auth-source-user "alice"))
-    (cl-letf (((symbol-function 'misskey--stored-auth-token)
-               (lambda (&optional _account) nil))
               ((symbol-function 'browse-url) #'ignore)
               ((symbol-function 'read-string) (lambda (&rest _) ""))
               ((symbol-function 'misskey-http--public-read-sync)
-               (lambda (&rest _) '((ok . nil))))
-              ((symbol-function 'misskey-auth--store-token)
-               (lambda (&rest _) (ert-fail "Token must not be stored"))))
-      (should-error (misskey-auth--ensure-token) :type 'user-error))))
+               (lambda (&rest _)
+                 '((ok . t) (token . "TOKEN-1")
+                   (user (id . "bob-id") (username . "bob"))))))
+      (let ((credential
+             (misskey-auth--request-credential
+              (misskey--current-account-locator))))
+        (should (equal (misskey--credential-token credential) "TOKEN-1"))
+        (should (equal (misskey--credential-user-id credential) "bob-id"))))))
 
-(ert-deftest misskey-auth-redacts-token-from-storage-errors ()
+(ert-deftest misskey-auth-rejects-hostile-miauth-token ()
+  (let ((misskey-instance-url "https://example.social"))
+    (cl-letf (((symbol-function 'browse-url) #'ignore)
+              ((symbol-function 'read-string) (lambda (&rest _) ""))
+              ((symbol-function 'misskey-http--public-read-sync)
+               (lambda (&rest _)
+                 '((ok . t) (token . "safe\"\nheader = \"evil")
+                   (user (id . "bob-id"))))))
+      (should-error
+       (misskey-auth--request-credential
+        (misskey--current-account-locator))
+       :type 'user-error))))
+
+(ert-deftest misskey-auth-storage-source-selects-first-encrypted-file ()
+  (let ((auth-sources
+         '(password-store
+           (:source "~/.authinfo.gpg" :host t)
+           "~/.netrc.gpg")))
+    (should
+     (equal (misskey-auth--storage-source)
+            '(:source "~/.authinfo.gpg" :host t))))
+  (let ((auth-sources '(password-store "~/.authinfo")))
+    (should-error (misskey-auth--storage-source) :type 'user-error)))
+
+(ert-deftest misskey-auth-real-netrc-upsert-leaves-one-replacement ()
+  (let* ((file (make-temp-file "misskey-auth-upsert-"))
+         (misskey-instance-url "https://example.social")
+         (misskey-auth-source-user "alice")
+         (account (misskey--current-account-locator))
+         (credential
+          (misskey--credential-create :token "NEW-TOKEN" :user-id "bob-id"))
+         (secret (misskey--credential-string credential)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "# preserve this comment\n"
+                    "machine other.social login other port misskey password OTHER\n"
+                    "machine example.social\n"
+                    "login alice\n"
+                    "port misskey\n"
+                    "password OLD # preserve inline comment\n"
+                    "# preserve comment between duplicates\n"
+                    "machine example.social login alice port misskey password OLDER\n"))
+          (cl-letf (((symbol-function 'misskey-auth--storage-source)
+                     (lambda () (list :source file))))
+            (should (equal
+                     (misskey-auth--store-credential account credential)
+                     credential)))
+          (auth-source-forget-all-cached)
+          (let* ((auth-sources (list (list :source file)))
+                 (matches
+                  (auth-source-search
+                   :host "example.social" :user "alice" :port "misskey"
+                   :require '(:secret :port) :max 10)))
+            (should (= (length matches) 1))
+            (should (equal (auth-info-password (car matches)) secret)))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (should (string-match-p "# preserve this comment"
+                                    (buffer-string)))
+            (should (string-match-p "machine other.social"
+                                    (buffer-string)))
+            (should (string-match-p "# preserve inline comment"
+                                    (buffer-string)))
+            (should (string-match-p "# preserve comment between duplicates"
+                                    (buffer-string)))))
+      (auth-source-forget-all-cached)
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest misskey-auth-upsert-failure-leaves-original-file ()
+  (let* ((file (make-temp-file "misskey-auth-atomic-"))
+         (spec '(:host "example.social" :user "alice" :port "misskey"))
+         (original
+          "machine example.social login alice port misskey password OLD\n"))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert original))
+          (cl-letf (((symbol-function 'misskey-auth--verify-netrc-candidate)
+                     (lambda (&rest _) (error "candidate rejected"))))
+            (should-error
+             (misskey-auth--upsert-netrc-file file spec "NEW")))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (should (equal (buffer-string) original))))
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest misskey-authorize-rebinds-label-from-alice-to-bob ()
   (let* ((misskey-instance-url "https://example.social")
          (misskey-auth-source-user "alice")
-         (auth-sources '("/tmp/misskey-auth-test.gpg"))
-         (account (misskey--current-account))
-         failure)
-    (cl-letf (((symbol-function 'auth-source-search)
-               (lambda (&rest _) (error "Backend exposed SECRET"))))
-      (condition-case err
-          (misskey-auth--store-token account "SECRET")
-        (error (setq failure (error-message-string err))))
-      (should (string-match-p "\\[REDACTED\\]" failure))
-      (should-not (string-match-p "SECRET" failure)))))
+         (target (misskey--current-account-locator))
+         (old (misskey--credential-create
+               :token "OLD-TOKEN" :user-id "alice-id"))
+         (new (misskey--credential-create
+               :token "NEW-TOKEN" :user-id "bob-id"))
+         stored replaced)
+    (cl-letf (((symbol-function 'misskey--stored-credential)
+               (lambda (&optional _account) old))
+              ((symbol-function 'misskey-auth--request-credential)
+               (lambda (account)
+                 (should (equal account target))
+                 new))
+              ((symbol-function 'misskey-auth--store-credential)
+               (lambda (account credential)
+                 (setq stored (list account credential))))
+              ((symbol-function 'misskey-auth--replace-session)
+               (lambda (account before after)
+                 (setq replaced (list account before after))))
+              ((symbol-function 'message) #'ignore))
+      (should (equal (misskey-auth-authorize target) "NEW-TOKEN"))
+      (should (equal stored (list target new)))
+      (should (equal replaced (list target old new)))
+      (should (equal (misskey--credential-user-id new) "bob-id")))))
+
+(ert-deftest misskey-auth-replaces-live-identity-session ()
+  (let* ((account
+          (misskey--account-create
+           :origin "https://example.social" :auth-source-user "label"))
+         (old (misskey--credential-create
+               :token "OLD" :user-id "alice-id"))
+         (new (misskey--credential-create
+               :token "NEW" :user-id "bob-id"))
+         (old-key '("https://example.social" "alice-id"))
+         (old-app (appkit-start-app 'misskey :id old-key))
+         recreated)
+    (puthash old-key old-app misskey--apps)
+    (unwind-protect
+        (cl-letf (((symbol-function 'misskey-app)
+                   (lambda (bound)
+                     (setq recreated bound)
+                     'new-app)))
+          (misskey-auth--replace-session account old new)
+          (should-not (appkit-app-live-p old-app))
+          (should-not (gethash old-key misskey--apps))
+          (should (equal (misskey--account-remote-user-id recreated)
+                         "bob-id")))
+      (remhash old-key misskey--apps)
+      (when (appkit-app-live-p old-app)
+        (appkit-stop-app old-app)))))
 
 (ert-deftest misskey-public-entry-points-authorize-before-opening ()
   (let (calls)
@@ -163,34 +219,23 @@
       (call-interactively #'misskey-home)
       (should (equal (nreverse calls) '(authorize home))))))
 
-(ert-deftest misskey-authorize-persists-through-new-auth-source-file ()
-  (let* ((file (make-temp-name
-                (expand-file-name "misskey-auth-test-" temporary-file-directory)))
-         (auth-sources (list file))
-         (auth-source-ignore-non-existing-file t)
-         (auth-source-save-behavior t)
-         (misskey-instance-url "https://example.social")
-         (misskey-auth-source-user "alice"))
-    (unwind-protect
-        (cl-letf (((symbol-function 'misskey-auth--storage-source)
-                   (lambda () file))
-                  ((symbol-function 'misskey-auth--request-token)
-                   (lambda (_account) "TEST-TOKEN"))
-                  ((symbol-function 'message) #'ignore))
-          (should-not (file-exists-p file))
-          (should (equal (misskey-auth--ensure-token) "TEST-TOKEN"))
-          (should (file-exists-p file))
-          (auth-source-forget-all-cached)
-          (should (equal (misskey--auth-token) "TEST-TOKEN"))
-          (with-temp-buffer
-            (insert-file-contents file)
-            (should
-             (string-match-p
-              "machine example.social login alice port misskey password TEST-TOKEN"
-              (buffer-string)))))
-      (auth-source-forget-all-cached)
-      (when (file-exists-p file)
-        (delete-file file)))))
+(ert-deftest misskey-auth-redacts-token-from-storage-errors ()
+  (let* ((misskey-instance-url "https://example.social")
+         (auth-sources '("credentials.gpg"))
+         (account (misskey--current-account-locator))
+         (credential
+          (misskey--credential-create :token "SECRET" :user-id "user-id"))
+         (secret (misskey--credential-string credential))
+         failure)
+    (cl-letf (((symbol-function 'misskey-auth--upsert-netrc-file)
+               (lambda (&rest _)
+                 (error "Backend exposed SECRET and %s" secret))))
+      (condition-case err
+          (misskey-auth--store-credential account credential)
+        (error (setq failure (error-message-string err))))
+      (should (string-match-p "\\[REDACTED\\]" failure))
+      (should-not (string-match-p "SECRET" failure))
+      (should-not (string-match-p (regexp-quote secret) failure)))))
 
 (provide 'misskey-auth-test)
 

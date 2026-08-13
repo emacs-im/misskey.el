@@ -5,14 +5,15 @@
 
 ;; Author: 0WD0
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (appkit "0.2.8") (plz "0.9.1"))
+;; Package-Requires: ((emacs "29.1") (appkit "0.2.14") (plz "0.9.1"))
 ;; Keywords: convenience, comm
 ;; URL: https://github.com/0WD0/misskey.el
 
 ;;; Commentary:
 
 ;; misskey.el is an Emacs client for Misskey-compatible servers.  It provides
-;; authenticated timelines and standalone note composition.
+;; Appkit-backed timelines, threads, profiles, search, notifications, media,
+;; compose drafts, and explicit note and relationship actions.
 
 ;;; Code:
 
@@ -28,12 +29,17 @@
 (require 'misskey-auth)
 (require 'misskey-compose)
 (require 'misskey-timeline)
+(require 'misskey-thread)
+(require 'misskey-profile)
+(require 'misskey-directory)
+(require 'misskey-search)
+(require 'misskey-notifications)
 
 ;;;###autoload
 (defun misskey-authorize ()
-  "Authorize the configured account and store its scoped API token."
+  "Replace the configured identity-bound credential through MiAuth."
   (interactive)
-  (misskey-auth--ensure-token))
+  (misskey-auth-authorize))
 
 ;;;###autoload
 (defun misskey-compose ()
@@ -48,6 +54,13 @@
   (interactive)
   (misskey-auth--ensure-token)
   (misskey-timeline-open))
+
+;;;###autoload
+(defun misskey-thread (note-id)
+  "Open the authenticated Misskey thread rooted at NOTE-ID."
+  (interactive "sMisskey note ID: ")
+  (misskey-auth--ensure-token)
+  (misskey-thread-open note-id))
 
 (provide 'misskey)
 
