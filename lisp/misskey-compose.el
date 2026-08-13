@@ -380,12 +380,30 @@ Interactively, select one of the current part's attachments."
   "Restore the compose surface to an editable state."
   (misskey-compose--set-body-read-only nil))
 
-(defun misskey-compose--update-submit-label (buffer label)
-  "Show LABEL for the active submit in compose BUFFER."
+(cl-defun misskey-compose--update-submit
+    (buffer &key (label nil label-p) (progress nil progress-p))
+  "Update BUFFER's compose submit from LABEL and PROGRESS."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (appkit-compose-update-submit :label label)
-      (misskey-compose--refresh))))
+      (when (appkit-compose-submitting-p)
+        (apply #'appkit-compose-update-submit
+               (append (and label-p (list :label label))
+                       (and progress-p (list :progress progress))))
+        (misskey-compose--refresh)))))
+
+(defun misskey-compose--upload-progress (buffer name index count event)
+  "Update BUFFER from upload EVENT for NAME at INDEX of COUNT."
+  (let ((progress (plist-get event :progress)))
+    (misskey-compose--update-submit
+     buffer
+     :label
+     (cond
+      ((and (numberp progress) (>= progress 1.0))
+       (format "Processing %s..." name))
+      ((> count 1)
+       (format "Uploading %s %d/%d" name index count))
+      (t (format "Uploading %s" name)))
+     :progress progress)))
 
 (defun misskey-compose--persist-items (buffer token items)
   "Persist submitted ITEMS back into BUFFER while TOKEN is current."
@@ -469,8 +487,10 @@ Interactively, select one of the current part's attachments."
          (token (plist-get submission :token))
          callback-ran-p
          request)
-    (misskey-compose--update-submit-label
-     buffer (format "Publishing note %d/%d..." (1+ index) total))
+    (misskey-compose--update-submit
+     buffer
+     :label (format "Publishing note %d/%d..." (1+ index) total)
+     :progress nil)
     (setq
      request
      (misskey-http-post
@@ -514,14 +534,20 @@ BUFFER's NOTE-INDEX selects the draft entry."
          (attachment (nth attachment-index
                           (plist-get item :attachments)))
          (path (plist-get attachment :path))
+         (name (file-name-nondirectory path))
+         (count (length (plist-get item :attachments)))
+         (index (1+ attachment-index))
          (token (plist-get submission :token))
          callback-ran-p
          request)
     (when (file-remote-p path)
       (user-error "Remote attachment paths are unsupported: %s" path))
-    (misskey-compose--update-submit-label
-     buffer (format "Uploading %s..."
-                    (file-name-nondirectory path)))
+    (misskey-compose--update-submit
+     buffer
+     :label (if (> count 1)
+                (format "Uploading %s %d/%d" name index count)
+              (format "Uploading %s..." name))
+     :progress nil)
     (setq
      request
      (misskey-http-upload-file
@@ -547,7 +573,11 @@ BUFFER's NOTE-INDEX selects the draft entry."
         (when (misskey-compose--accept-callback buffer token)
           (misskey-compose--handle-error buffer token error-message)))
       :account account
-      :owner (plist-get submission :owner)))
+      :owner (plist-get submission :owner)
+      :progress
+      (lambda (event)
+        (misskey-compose--upload-progress
+         buffer name index count event))))
     (misskey-compose--remember-request
      buffer token request callback-ran-p)))
 

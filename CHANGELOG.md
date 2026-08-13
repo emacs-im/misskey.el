@@ -15,6 +15,7 @@
 - Added one contextual action path for reactions, favorites, pure renotes, note deletion, follow, and unfollow, with account-scoped state overrides and dependency-driven invalidation across every live view.
 - Added lifecycle-owned presentation for every Drive attachment through Appkit, including guarded sensitive media, original-resource open actions, and MIME-filtered avatar/image/video preview caching.
 - Added authenticated JSON and streaming multipart curl transports with redirects and retries disabled, raw response and diagnostic byte caps, strict bearer validation, Appkit-owned cancellation, token redaction, and unknown-outcome reporting for every post-dispatch write failure.
+- Added Drive upload progress on the compose submit status strip, measured from curl's upload meter without loading the file into Emacs.
 
 ### Fixed
 

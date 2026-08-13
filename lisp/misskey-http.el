@@ -28,9 +28,13 @@
 (defconst misskey-http--stderr-limit (* 64 1024)
   "Maximum curl diagnostic bytes retained for one request.")
 
-(defconst misskey-http--curl-args
-  '("--disable" "--silent" "--max-redirs" "0" "--retry" "0")
+(defconst misskey-http--curl-safety-args
+  '("--disable" "--max-redirs" "0" "--retry" "0")
   "Fixed curl arguments that prohibit redirects and retries.")
+
+(defconst misskey-http--curl-args
+  (append misskey-http--curl-safety-args '("--silent"))
+  "Silent curl arguments that prohibit redirects and retries.")
 
 (cl-defstruct (misskey-http--request
                (:constructor misskey-http--request-create))
@@ -44,7 +48,9 @@
   dispatched-p
   handle
   buffers
-  settled-p)
+  settled-p
+  progress
+  notified-progress)
 
 (defun misskey-http--unknown-write-outcome (message)
   "Mark write failure MESSAGE as having an unknown remote outcome."
@@ -314,7 +320,59 @@ payload or readable failure message."
                    misskey-http--header-limit)
                 (process-put process 'misskey-http-headers combined)))))))))
 
-(defun misskey-http--stderr-filter (process output)
+(defun misskey-http--curl-progress-header-p (line)
+  "Return non-nil when LINE is a curl progress-meter header."
+  (or (string-match-p "\\`[ \t]*%[ \t]+Total\\>" line)
+      (string-match-p "\\`[ \t]*Dload[ \t]+Upload\\>" line)))
+
+(defun misskey-http--curl-upload-ratio (line)
+  "Return LINE's curl % Xferd as a 0-1 float, or nil."
+  (when (string-match
+         (concat "\\`[ \t]*[0-9]+[ \t]+[^ \t]+[ \t]+[0-9]+[ \t]+"
+                 "[^ \t]+[ \t]+\\([0-9]+\\)\\>")
+         line)
+    (/ (float (string-to-number (match-string 1 line))) 100.0)))
+
+(defun misskey-http--split-curl-stderr (pending output)
+  "Split PENDING plus OUTPUT into progress, diagnostics, and a remainder.
+
+Return a plist with `:progress' as the latest 0-1 upload ratio or nil,
+`:diagnostics' as complete non-progress lines, and `:pending' as the
+unterminated suffix."
+  (let* ((text (concat (or pending "") output))
+         (terminated (string-match-p "[\r\n]\\'" text))
+         (parts (split-string text "[\r\n]" t))
+         (pending (if (or terminated (null parts))
+                      ""
+                    (car (last parts))))
+         (lines (if (or terminated (null parts))
+                    parts
+                  (butlast parts)))
+         diagnostics
+         progress)
+    (dolist (line lines)
+      (if-let* ((ratio (misskey-http--curl-upload-ratio line)))
+          (setq progress ratio)
+        (unless (misskey-http--curl-progress-header-p line)
+          (push line diagnostics))))
+    (list :progress progress
+          :diagnostics (nreverse diagnostics)
+          :pending pending)))
+
+(defun misskey-http--notify-upload-progress (request progress)
+  "Deliver PROGRESS as a 0-1 upload event for REQUEST when it changed."
+  (when (and (functionp (misskey-http--request-progress request))
+             (not (misskey-http--request-settled-p request))
+             (numberp progress)
+             (<= 0 progress)
+             (<= progress 1)
+             (not (eql progress
+                       (misskey-http--request-notified-progress request))))
+    (setf (misskey-http--request-notified-progress request) progress)
+    (funcall (misskey-http--request-progress request)
+             (list :progress progress))))
+
+(defun misskey-http--stderr-keep (process output)
   "Retain at most `misskey-http--stderr-limit' bytes of PROCESS OUTPUT."
   (when-let* ((buffer (process-buffer process)))
     (when (buffer-live-p buffer)
@@ -328,6 +386,32 @@ payload or readable failure message."
           (insert piece))
         (when (< (string-bytes piece) (string-bytes output))
           (process-put process 'misskey-http-truncated t))))))
+
+(defun misskey-http--flush-stderr-pending (process)
+  "Flush PROCESS's unterminated stderr suffix into the diagnostic buffer."
+  (when-let* ((pending (process-get process 'misskey-http-stderr-pending)))
+    (process-put process 'misskey-http-stderr-pending nil)
+    (unless (or (misskey-http--curl-upload-ratio pending)
+                (misskey-http--curl-progress-header-p pending))
+      (misskey-http--stderr-keep process pending))))
+
+(defun misskey-http--stderr-filter (process output)
+  "Retain bounded diagnostics from PROCESS OUTPUT and report upload progress."
+  (when-let* ((request (process-get process 'misskey-http-request))
+              ((functionp (misskey-http--request-progress request))))
+    (let* ((parsed (misskey-http--split-curl-stderr
+                    (process-get process 'misskey-http-stderr-pending)
+                    output))
+           (diagnostics (plist-get parsed :diagnostics)))
+      (process-put process 'misskey-http-stderr-pending
+                   (plist-get parsed :pending))
+      (when-let* ((ratio (plist-get parsed :progress)))
+        (misskey-http--notify-upload-progress request ratio))
+      (setq output (and diagnostics
+                        (concat (mapconcat #'identity diagnostics "\n")
+                                "\n")))))
+  (when (and (stringp output) (not (string-empty-p output)))
+    (misskey-http--stderr-keep process output)))
 
 (defun misskey-http--curl-error-detail (process)
   "Return bounded, redacted-safe diagnostic detail for failed PROCESS."
@@ -346,6 +430,8 @@ payload or readable failure message."
   "Settle the JSON or multipart request owned by curl PROCESS."
   (when (memq (process-status process) '(exit signal))
     (when-let* ((request (process-get process 'misskey-http-request)))
+      (when-let* ((stderr (process-get process 'misskey-http-stderr-process)))
+        (misskey-http--flush-stderr-pending stderr))
       (unless (misskey-http--request-settled-p request)
         (if (and (eq (process-status process) 'exit)
                  (zerop (process-exit-status process)))
@@ -515,8 +601,9 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
 (defun misskey-http--upload-command (url file)
   "Return bounded curl arguments uploading FILE to URL."
   (append
-   misskey-http--curl-args
+   misskey-http--curl-safety-args
    (list "--show-error"
+         "--progress-meter"
          "--suppress-connect-headers"
          "--url" url
          "--request" "POST"
@@ -534,17 +621,21 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
     ""))
 
 (cl-defun misskey-http-upload-file
-    (file callback &key errback owner account)
+    (file callback &key errback owner account progress)
   "Upload FILE and pass its decoded response to CALLBACK.
 
 ERRBACK receives readable failures.  OWNER defaults to ACCOUNT's Appkit
-session and owns cancellation.  Return the opaque request, or nil when setup
-fails."
+session and owns cancellation.  PROGRESS, when callable, receives a plist
+with `:progress' as a 0-1 float measured from curl's upload meter.
+Return the opaque request, or nil when setup fails."
   (unless (functionp callback)
     (error "Misskey upload callback is not callable"))
+  (when (and progress (not (functionp progress)))
+    (error "Misskey upload progress callback is not callable"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
          (request (misskey-http--request-create
-                   :callback callback :errback error-fn :writep t))
+                   :callback callback :errback error-fn :writep t
+                   :progress progress))
          (path (expand-file-name file))
          token)
     (unless (functionp error-fn)

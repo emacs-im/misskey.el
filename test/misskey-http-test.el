@@ -131,6 +131,8 @@
         (let ((command
                (misskey-http--upload-command
                 "https://example.social/api/drive/files/create" file)))
+          (should (member "--progress-meter" command))
+          (should-not (member "--silent" command))
           (should-not (string-match-p "SECRET" (prin1-to-string command)))
           (should (equal (misskey-http--curl-authorization-config "SECRET")
                          "header = \"Authorization: Bearer SECRET\"\n"))
@@ -138,6 +140,69 @@
                    '("" "x\nheader=x" "x\"y" "x\\y" "x y" "--config"))
             (should-error
              (misskey-http--curl-authorization-config hostile))))
+      (delete-file file))))
+
+(ert-deftest misskey-http-parses-curl-upload-meter-and-keeps-errors ()
+  (should (eql (misskey-http--curl-upload-ratio
+                "  12  4096    0     0   12   512      0   512")
+               0.12))
+  (should-not (misskey-http--curl-upload-ratio
+               "  % Total    % Received % Xferd"))
+  (let ((parsed
+         (misskey-http--split-curl-stderr
+          nil
+          (concat
+           "  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\n"
+           "                                 Dload  Upload  Total   Spent   Left   Speed\n"
+           "\r  0      0   0      0   0      0      0      0                              0"
+           "\r100  2.00M   0      0 100  2.00M      0  1.10M   00:01   00:01          1.92M"
+           "\r 58  4.00M  16 331.9k 100  2.00M 118.4k 730.4k   00:17   00:02   00:15  1.13M"
+           "\r100  4.00"))))
+    (should (eql (plist-get parsed :progress) 1.0))
+    (should (equal (plist-get parsed :pending) "100  4.00"))
+    (should-not (plist-get parsed :diagnostics)))
+  (let ((parsed
+         (misskey-http--split-curl-stderr
+          nil "curl: (56) Recv failure\n")))
+    (should-not (plist-get parsed :progress))
+    (should (equal (plist-get parsed :diagnostics)
+                   '("curl: (56) Recv failure")))))
+
+(ert-deftest misskey-http-stderr-progress-does-not-fill-diagnostics ()
+  (let* ((buffer (generate-new-buffer " *misskey-progress-stderr*"))
+         events
+         (request
+          (misskey-http--request-create
+           :callback #'ignore :errback #'ignore :writep t
+           :progress (lambda (event) (push (plist-get event :progress)
+                                           events))))
+         (process
+          (make-pipe-process :name "misskey-progress-stderr"
+                             :buffer buffer :noquery t)))
+    (unwind-protect
+        (progn
+          (process-put process 'misskey-http-request request)
+          (misskey-http--stderr-filter
+           process
+           (concat
+            "  % Total    % Received % Xferd\n"
+            "\r 25  1024    0     0   25   256\n"
+            "curl: (52) Empty reply from server\n"))
+          (should (equal (nreverse events) '(0.25)))
+          (should (string-match-p "Empty reply"
+                                  (misskey-http--buffer-contents buffer)))
+          (should-not (string-match-p "Xferd"
+                                      (misskey-http--buffer-contents buffer))))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest misskey-http-upload-rejects-noncallable-progress ()
+  (let ((file (make-temp-file "misskey-http-progress-")))
+    (unwind-protect
+        (should-error
+         (misskey-http-upload-file file #'ignore :progress 'nope))
       (delete-file file))))
 
 (ert-deftest misskey-http-stream-filter-caps-body-at-next-byte ()

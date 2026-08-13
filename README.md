@@ -70,7 +70,7 @@ The Appkit Compose surface keeps generated context and status outside the editab
 - `C-c C-p`: remove the current extra note.
 - `C-c C-k`: abandon an idle draft; an in-flight write cannot be silently canceled.
 
-Each note accepts up to 16 files. File-only notes are supported. Local files stream to `drive/files/create` without entering Emacs memory, and `notes/create` receives their Drive IDs. A multi-note draft publishes in order and makes each later note a reply to the preceding created note.
+Each note accepts up to 16 files. File-only notes are supported. Local files stream to `drive/files/create` without entering Emacs memory, and `notes/create` receives their Drive IDs. The compose State field shows a progress bar and percent for the file currently uploading. A multi-note draft publishes in order and makes each later note a reply to the preceding created note.
 
 After a successful upload, its Drive ID is stored in that compose item's Appkit metadata. If later note creation fails, the draft remains editable and a deliberate retry reuses that Drive file instead of uploading it again.
 

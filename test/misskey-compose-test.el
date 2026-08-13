@@ -295,6 +295,36 @@
               (should-not (buffer-live-p buffer)))))
       (delete-file file))))
 
+(ert-deftest misskey-compose-upload-progress-updates-status ()
+  (let ((first (make-temp-file "misskey-compose-progress-a-"))
+        (second (make-temp-file "misskey-compose-progress-b-")))
+    (unwind-protect
+        (misskey-compose-test--with-buffer
+          (misskey-compose-attach-file first)
+          (misskey-compose-attach-file second)
+          (let (progress-fn)
+            (cl-letf (((symbol-function 'message) #'ignore)
+                      ((symbol-function 'misskey-http-upload-file)
+                       (lambda (_file _callback &rest options)
+                         (setq progress-fn (plist-get options :progress))
+                         'upload-request))
+                      ((symbol-function 'misskey-http-post)
+                       (lambda (&rest _)
+                         (ert-fail "Note created before upload finished")))
+                      ((symbol-function 'misskey-http-cancel) #'ignore))
+              (misskey-compose-send)
+              (should (functionp progress-fn))
+              (funcall progress-fn (list :progress 0.25))
+              (should (string-match-p "Uploading"
+                                      (appkit-compose-display-string)))
+              (should (string-match-p "1/2"
+                                      (appkit-compose-display-string)))
+              (should (string-match-p "25%"
+                                      (appkit-compose-display-string)))
+              (appkit-compose-cancel-submit))))
+      (delete-file first)
+      (delete-file second))))
+
 (ert-deftest misskey-compose-allows-attachment-only-note ()
   (let ((file (make-temp-file "misskey-compose-file-only-")))
     (unwind-protect
