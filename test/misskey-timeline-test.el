@@ -144,7 +144,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should (string-match-p "2 attachments" (buffer-string)))
               (should
                (string-match-p
-                "Alice @alice.*\nrenoted by Bob @bob\nrenoted body"
+                "renoted by Bob @bob\nAlice @alice.*\nrenoted body"
                 (buffer-string)))
               (goto-char (point-min))
               (appkit-discussion-next-entry)
@@ -984,17 +984,8 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
            (string-match-p
             (regexp-quote (misskey-render-time wrapper)) (buffer-string)))
           (goto-char (point-min))
-          (search-forward "Bob @bob")
-          (should (equal (get-text-property
-                          (1- (point)) misskey-user-id-property)
-                         "u-bob"))
-          (should
-           (equal
-            (save-excursion
-              (goto-char (1- (point)))
-              (misskey-user-id (misskey-actions--user-at-point)))
-            "u-bob"))
           (search-forward "renoted by Alice @alice")
+          (should (= 1 (line-number-at-pos)))
           (should (equal (get-text-property
                           (1- (point)) misskey-user-id-property)
                          "u-alice"))
@@ -1004,6 +995,17 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (goto-char (1- (point)))
               (misskey-user-id (misskey-actions--user-at-point)))
             "u-alice"))
+          (search-forward "Bob @bob")
+          (should (= 2 (line-number-at-pos)))
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-bob"))
+          (should
+           (equal
+            (save-excursion
+              (goto-char (1- (point)))
+              (misskey-user-id (misskey-actions--user-at-point)))
+            "u-bob"))
           (search-forward "Carol @carol")
           (should (equal (get-text-property
                           (1- (point)) misskey-user-id-property)

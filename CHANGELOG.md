@@ -22,4 +22,4 @@
 - Successful Drive uploads remain attached to a failed draft, avoiding duplicate uploads on a deliberate retry of note creation.
 - Browsing or paging a notification view never implicitly acknowledges remote notifications.
 - Note views keep timestamps at the live window's right edge, elide long author headings in narrow windows, and restore the complete heading after widening.
-- Pure Renotes show the original author's avatar, heading, and timestamp, with `renoted by …` on a separate social-context line.
+- Pure Renotes show `renoted by …` as pre-heading social context, followed by the original author's avatar, heading, timestamp, and content.

@@ -160,12 +160,6 @@
          (quoted (and candidate
                       (not (misskey-note-deleted-p app candidate))
                       candidate)))
-    (when (misskey-note-pure-renote-p note)
-      (appkit-ui-insert-prefixed-lines
-       prefix
-       (concat "renoted by "
-               (misskey-render--user-label (misskey-note-user note)))
-       :face 'shadow :properties properties))
     (when primary
       (misskey-render--insert-content
        primary revealed prefix properties)
@@ -208,6 +202,11 @@ PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
      :avatar (and avatar-p
                   (misskey-media-avatar-image view note))
      :avatar-fallback "@"
+     :context
+     (and (misskey-note-pure-renote-p note)
+          (concat "renoted by "
+                  (misskey-render--user-label (misskey-note-user note))))
+     :context-face 'shadow
      :heading-inserter (lambda () (misskey-render--insert-heading note))
      :heading-face 'bold
      :time (misskey-render-time (misskey-note-display-note note))
