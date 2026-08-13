@@ -37,6 +37,24 @@ Avatar requests run only when Emacs can display images."
   :type 'boolean
   :group 'misskey)
 
+(defcustom misskey-timeline-show-media t
+  "When non-nil, fetch and display home-timeline media previews.
+
+Preview requests run only when Emacs can display images.  Sensitive files stay
+hidden until their note's content warning is revealed."
+  :type 'boolean
+  :group 'misskey)
+
+(defcustom misskey-timeline-media-preview-width 480
+  "Maximum width in pixels for an inline timeline media preview."
+  :type 'integer
+  :group 'misskey)
+
+(defcustom misskey-timeline-media-preview-height 320
+  "Maximum height in pixels for an inline timeline media preview."
+  :type 'integer
+  :group 'misskey)
+
 (defvar misskey-timeline-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -200,6 +218,187 @@ Avatar requests run only when Emacs can display images."
                               (plist-get state :items)))))
         (misskey-timeline--prefetch-avatar view url)))))
 
+(defun misskey-timeline--media-enabled-p ()
+  "Return non-nil when timeline media previews can be displayed."
+  (and misskey-timeline-show-media
+       (display-images-p)))
+
+(defun misskey-timeline--media-files (note)
+  "Return image and video files displayed by NOTE."
+  (cl-remove-if-not
+   (lambda (file)
+     (and (consp file)
+          (stringp (alist-get 'id file))
+          (stringp (alist-get 'type file))
+          (string-match-p "\\`\\(?:image\\|video\\)/"
+                          (alist-get 'type file))))
+   (alist-get 'files (misskey-timeline--display-note note))))
+
+(defun misskey-timeline--media-url (file)
+  "Return FILE's HTTPS preview URL, or nil."
+  (let ((url (or (alist-get 'thumbnailUrl file)
+                 (and (string-prefix-p "image/" (alist-get 'type file))
+                      (alist-get 'url file)))))
+    (and (stringp url)
+         (string-match-p "\\`https://" url)
+         url)))
+
+(defun misskey-timeline--media-cache-base (file)
+  "Return the extensionless cache path for FILE's preview."
+  (when-let* ((url (misskey-timeline--media-url file)))
+    (expand-file-name
+     (secure-hash 'sha256 url)
+     (locate-user-emacs-file "misskey/media/"))))
+
+(defun misskey-timeline--media-images (state)
+  "Return STATE's media preview image cache."
+  (let ((images (plist-get state :media-images)))
+    (unless (hash-table-p images)
+      (error "Misskey timeline state has no media image cache"))
+    images))
+
+(defun misskey-timeline--media-image (view file)
+  "Return VIEW's cached preview image for FILE, or nil."
+  (when (misskey-timeline--media-enabled-p)
+    (let* ((state (misskey-timeline--state view))
+           (images (misskey-timeline--media-images state))
+           (file-id (alist-get 'id file)))
+      (or (gethash file-id images)
+          (when-let* ((cache-base
+                       (misskey-timeline--media-cache-base file))
+                      (cached
+                       (appkit-media-image-cache-existing-file cache-base))
+                      (image
+                       (appkit-media-preview-image-from-file
+                        cached
+                        misskey-timeline-media-preview-width
+                        misskey-timeline-media-preview-height)))
+            (puthash file-id image images)
+            image)))))
+
+(defun misskey-timeline--open-media (view file)
+  "Open FILE from timeline VIEW through Appkit."
+  (let* ((kind (if (string-prefix-p "video/" (alist-get 'type file))
+                   'video
+                 'image))
+         (url (alist-get 'url file))
+         (cache-base (misskey-timeline--media-cache-base file))
+         (cached (and cache-base
+                      (appkit-media-image-cache-existing-file cache-base))))
+    (appkit-media-open-resource
+     (appkit-media-resource-create
+      :file (and (eq kind 'image) cached)
+      :url url
+      :name (alist-get 'name file)
+      :mime-type (alist-get 'type file))
+     :kind kind
+     :cache-key (alist-get 'id file)
+     :cache-directory (locate-user-emacs-file "misskey/media/")
+     :client-label "Misskey media"
+     :owner view)))
+
+(defun misskey-timeline--media-alt-text (file)
+  "Return accessible fallback text for FILE."
+  (or (and (stringp (alist-get 'comment file))
+           (not (string-empty-p (alist-get 'comment file)))
+           (alist-get 'comment file))
+      (and (stringp (alist-get 'name file))
+           (not (string-empty-p (alist-get 'name file)))
+           (format "[%s]" (alist-get 'name file)))
+      "[media]"))
+
+(defun misskey-timeline--insert-media (view file prefix properties hidden-p)
+  "Insert FILE for VIEW with PREFIX and PROPERTIES.
+
+When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
+  (let* ((start (point))
+         (image (and (not hidden-p)
+                     (misskey-timeline--media-image view file)))
+         (alt (misskey-timeline--media-alt-text file)))
+    (cond
+     (hidden-p
+      (insert "[sensitive media]"))
+     (image
+      (appkit-media-insert-image-slices
+       image
+       (lambda ()
+         (misskey-timeline--open-media view file))
+       nil alt "Open Misskey media"))
+     (t
+      (insert (if (misskey-timeline--media-url file)
+                  (format "%s loading preview…" alt)
+                alt))))
+    (insert "\n")
+    (appkit-ui-apply-line-prefix start (point) prefix)
+    (add-text-properties start (point) properties)))
+
+(defun misskey-timeline--insert-media-files
+    (view note revealed prefix properties)
+  "Insert NOTE's media into VIEW using REVEALED, PREFIX, and PROPERTIES."
+  (dolist (file (misskey-timeline--media-files note))
+    (misskey-timeline--insert-media
+     view file prefix properties
+     (and (eq (alist-get 'isSensitive file) t)
+          (not revealed)))))
+
+(defun misskey-timeline--media-note-keys (state file-id)
+  "Return keys of notes in STATE containing FILE-ID."
+  (cl-loop for note in (plist-get state :items)
+           when (cl-find file-id (misskey-timeline--media-files note)
+                         :key (lambda (file) (alist-get 'id file))
+                         :test #'equal)
+           collect (misskey-timeline--note-id note)))
+
+(defun misskey-timeline--finish-media-fetch (view file-id file)
+  "Refresh VIEW rows using FILE-ID after FILE has been cached."
+  (when (and file (appkit-view-live-p view))
+    (let* ((state (misskey-timeline--state view))
+           (images (misskey-timeline--media-images state))
+           (keys (misskey-timeline--media-note-keys state file-id)))
+      (remhash file-id images)
+      (when keys
+        (misskey-timeline--sync view keys 'preserve)))))
+
+(defun misskey-timeline--prefetch-media (view file)
+  "Schedule FILE's missing preview for VIEW."
+  (when-let* ((url (misskey-timeline--media-url file)))
+    (unless (misskey-timeline--media-image view file)
+      (appkit-task-queue-submit
+       (misskey-timeline--avatar-queue view)
+       (list 'media (alist-get 'id file))
+       (lambda (complete)
+         (let ((transfer
+                (appkit-media-cache-image-resource-async
+                 (appkit-media-resource-create
+                  :url url
+                  :name (alist-get 'name file)
+                  :mime-type (alist-get 'type file))
+                 (misskey-timeline--media-cache-base file)
+                 (lambda (cached)
+                   (funcall complete cached))
+                 (lambda (_failure)
+                   (funcall complete nil)))))
+           (when (appkit-media-transfer-p transfer)
+             (lambda ()
+               (appkit-media-cancel-transfer transfer)))))
+       :finish
+       (lambda (cached)
+         (misskey-timeline--finish-media-fetch
+          view (alist-get 'id file) cached))))))
+
+(defun misskey-timeline--prefetch-media-files (view)
+  "Schedule missing media previews used by live timeline VIEW."
+  (when (and (misskey-timeline--media-enabled-p)
+             (integerp appkit-media-transfer-concurrency)
+             (> appkit-media-transfer-concurrency 0))
+    (let ((state (misskey-timeline--state view)))
+      (dolist (file
+               (delete-dups
+                (apply #'append
+                       (mapcar #'misskey-timeline--media-files
+                               (plist-get state :items)))))
+        (misskey-timeline--prefetch-media view file)))))
+
 (defun misskey-timeline--user-label (note)
   "Return NOTE's readable author label."
   (let* ((user (alist-get 'user note))
@@ -291,13 +490,18 @@ Avatar requests run only when Emacs can display images."
   (let* ((pure-renote-p (misskey-timeline--pure-renote-p note))
          (primary (misskey-timeline--display-note note))
          (quoted (and (not pure-renote-p) (alist-get 'renote note)))
-         (revealed (misskey-timeline--revealed-p state key)))
+         (revealed (misskey-timeline--revealed-p state key))
+         (view (appkit-current-view)))
     (misskey-timeline--insert-content primary revealed prefix properties)
+    (misskey-timeline--insert-media-files
+     view primary revealed prefix properties)
     (when (consp quoted)
       (appkit-ui-insert-prefixed-lines
        prefix (format "Quoting %s" (misskey-timeline--user-label quoted))
        :face 'shadow :properties properties)
-      (misskey-timeline--insert-content quoted revealed prefix properties))))
+      (misskey-timeline--insert-content quoted revealed prefix properties)
+      (misskey-timeline--insert-media-files
+       view quoted revealed prefix properties))))
 
 (defun misskey-timeline--render-width ()
   "Return the current timeline render width in columns."
@@ -405,11 +609,13 @@ Avatar requests run only when Emacs can display images."
               (initialp (eq (plist-get state :phase) 'initial)))
           (clrhash (plist-get state :revealed-content))
           (clrhash (misskey-timeline--avatar-images state))
+          (clrhash (misskey-timeline--media-images state))
           (setf (plist-get state :items) notes
                 (plist-get state :phase) 'ready
                 (plist-get state :message) nil)
           (misskey-timeline--sync view nil (if initialp 'first 'preserve))
           (misskey-timeline--prefetch-avatars view)
+          (misskey-timeline--prefetch-media-files view)
           (message "Loaded %d Misskey notes" (length notes)))
       (error
        (misskey-timeline--handle-error
@@ -507,6 +713,8 @@ Avatar requests run only when Emacs can display images."
                           :revealed-content
                           (make-hash-table :test #'equal)
                           :avatar-images
+                          (make-hash-table :test #'equal)
+                          :media-images
                           (make-hash-table :test #'equal)
                           :avatar-queue nil)))
          (view

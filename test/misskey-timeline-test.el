@@ -33,6 +33,20 @@ fields."
           (host)
           (avatarUrl . ,avatar-url))))
 
+(defun misskey-timeline-test--file
+    (id &optional sensitive type thumbnail-url url)
+  "Return a test media file with ID.
+
+SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
+  `((id . ,id)
+    (name . ,(format "%s.jpg" id))
+    (type . ,(or type "image/jpeg"))
+    (thumbnailUrl . ,(or thumbnail-url
+                         (format "https://cdn.example/%s-thumb.webp" id)))
+    (url . ,(or url (format "https://cdn.example/%s.jpg" id)))
+    (isSensitive . ,sensitive)
+    (comment . "Media description")))
+
 (defun misskey-timeline-test--cleanup (view buffer)
   "Destroy test VIEW and BUFFER, then stop Misskey sessions."
   (when (and (appkit-view-p view) (appkit-view-live-p view))
@@ -235,6 +249,124 @@ fields."
               (should-not
                (appkit-task-queue-pending-p
                 (plist-get (appkit-view-state view) :avatar-queue))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-home-loads-media-preview-with-stable-row-position ()
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey-timeline-show-avatars nil)
+        (misskey-timeline-show-media t)
+        (appkit-media-transfer-concurrency 2)
+        (misskey--apps (make-hash-table :test #'equal))
+        (media-file (misskey-timeline-test--file "f1"))
+        (media-image '(image :type png :data "preview"))
+        cache-file
+        download-success
+        inserted-images
+        requested-resource
+        requested-cache-base
+        view
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'display-images-p)
+                (lambda (&rest _arguments) t))
+               ((symbol-function 'misskey-auth--ensure-token)
+                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey-http-read)
+                (lambda (_endpoint _parameters callback &rest _options)
+                  (funcall
+                   callback
+                   (list
+                    (misskey-timeline-test--note
+                     "n1" "body" :files (list media-file))))))
+               ((symbol-function 'appkit-media-image-cache-existing-file)
+                (lambda (_cache-base) cache-file))
+               ((symbol-function 'appkit-media-preview-image-from-file)
+                (lambda (file _width _height)
+                  (and (equal file cache-file) media-image)))
+               ((symbol-function 'appkit-media-insert-image-slices)
+                (lambda (image &rest _arguments)
+                  (push image inserted-images)
+                  (insert "[preview]")))
+               ((symbol-function 'appkit-media-cache-image-resource-async)
+                (lambda (resource cache-base success _error &rest _options)
+                  (setq requested-resource resource
+                        requested-cache-base cache-base
+                        download-success success)
+                  'transfer))
+               ((symbol-function 'appkit-media-transfer-p)
+                (lambda (object) (eq object 'transfer)))
+               ((symbol-function 'appkit-media-cancel-transfer) #'ignore))
+            (setq view (call-interactively #'misskey-home)
+                  buffer (appkit-view-buffer view))
+            (should
+             (equal (alist-get 'url requested-resource)
+                    (alist-get 'thumbnailUrl media-file)))
+            (should
+             (string-suffix-p
+              (secure-hash 'sha256 (alist-get 'thumbnailUrl media-file))
+              requested-cache-base))
+            (should (functionp download-success))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (appkit-discussion-next-entry)
+              (should (equal (appkit-discussion-key-at-point) "n1"))
+              (should (string-match-p "loading preview" (buffer-string)))
+              (setq cache-file "/tmp/misskey-media.webp")
+              (funcall download-success cache-file)
+              (should (equal (car inserted-images) media-image))
+              (should (equal (appkit-discussion-key-at-point) "n1"))
+              (should-not
+               (appkit-task-queue-pending-p
+                (plist-get (appkit-view-state view) :avatar-queue))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-home-hides-sensitive-media-until-revealed ()
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey-timeline-show-avatars nil)
+        (misskey-timeline-show-media t)
+        (misskey--apps (make-hash-table :test #'equal))
+        (media-file (misskey-timeline-test--file "f1" t))
+        view
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'display-images-p)
+                (lambda (&rest _arguments) t))
+               ((symbol-function 'misskey-auth--ensure-token)
+                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey-http-read)
+                (lambda (_endpoint _parameters callback &rest _options)
+                  (funcall
+                   callback
+                   (list
+                    (misskey-timeline-test--note
+                     "n1" "hidden body"
+                     :cw "Spoiler" :files (list media-file))))))
+               ((symbol-function 'appkit-media-image-cache-existing-file)
+                (lambda (_cache-base) nil))
+               ((symbol-function 'appkit-media-cache-image-resource-async)
+                (lambda (&rest _arguments) nil)))
+            (setq view (call-interactively #'misskey-home)
+                  buffer (appkit-view-buffer view))
+            (with-current-buffer buffer
+              (should (string-match-p "\\[sensitive media\\]"
+                                      (buffer-string)))
+              (should-not (string-match-p "loading preview"
+                                          (buffer-string)))
+              (goto-char (point-min))
+              (appkit-discussion-next-entry)
+              (misskey-timeline-toggle-content-warning)
+              (should-not (string-match-p "\\[sensitive media\\]"
+                                          (buffer-string)))
+              (should (string-match-p "loading preview"
+                                      (buffer-string))))))
       (misskey-timeline-test--cleanup view buffer))))
 
 (ert-deftest misskey-home-cancels-avatar-transfer-with-view ()
