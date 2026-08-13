@@ -45,6 +45,7 @@ Timeline keys are:
 
 - `g`: refresh
 - `n` / `p`: move between notes using Appkit discussion navigation
+- `N`: load one older page without moving the selected note
 - `RET`: reveal or hide content guarded by a content warning
 - `c`: compose for the timeline's captured account
 
@@ -59,12 +60,12 @@ The composer currently publishes only non-empty plain text with `visibility` set
 
 ## Home Timeline
 
-The timeline uses the common Misskey and Sharkey `notes/timeline` contract. `misskey-timeline-limit` controls the number of notes requested, from 1 through 100. Refreshes reconcile rows by note ID and preserve semantic point and viewport position through Appkit.
+The timeline uses the common Misskey and Sharkey `notes/timeline` contract. `misskey-timeline-limit` controls each request from 1 through 100 notes. Refreshes reconcile rows by note ID; `N` requests the next older page with the last visible note's `untilId`, removes overlapping boundary notes, and stops after the server returns no new notes. Both workflows preserve semantic point and viewport position through Appkit.
 
 On graphical displays, author avatars are fetched asynchronously and cached under `misskey/avatars/` in the Emacs user directory. Placeholders reserve the same two-line column width, so rows do not shift as images arrive. Set `misskey-timeline-show-avatars` to `nil` to disable avatar requests.
 On graphical displays, image attachments and video thumbnails are also fetched asynchronously and shown inline; activate a preview to open an image inside Emacs or play a video through Appkit. Sensitive attachments remain hidden until their note's content warning is revealed. Set `misskey-timeline-show-media` to `nil` to disable preview requests; `misskey-timeline-media-preview-width` and `misskey-timeline-media-preview-height` bound their size.
 
-Text, pure renotes, quoted notes, visibility, local-only state, counts, attachment previews, and attachment counts are rendered. Content-warning bodies and sensitive media remain hidden until explicitly revealed. MFM interpretation, pagination, replies, reactions, and renote actions are intentionally deferred to later vertical slices.
+Text, pure renotes, quoted notes, visibility, local-only state, counts, attachment previews, and attachment counts are rendered. Content-warning bodies and sensitive media remain hidden until explicitly revealed. MFM interpretation, replies, reactions, and renote actions are intentionally deferred to later vertical slices.
 
 ## Write Safety
 

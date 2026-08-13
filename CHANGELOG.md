@@ -11,6 +11,7 @@
 - Compose publish now uses Appkit's shared submit session for in-flight state. `C-c C-k` still refuses while a publish is in flight because Misskey has not attached a transport cancel hook yet.
 - A compose draft can hold several ordered notes on Appkit's multi-part surface. `C-c C-n` inserts another note after the current one, `C-c C-p` drops the current extra note, and publish creates the first note then each later note with `replyId`.
 - Added `M-x misskey-home`, backed by Appkit views, keyed projection reconciliation, and discussion rows for the authenticated home timeline.
+- Added `N` pagination for older home-timeline notes through Misskey's `untilId` contract, with duplicate-boundary removal, exhaustion tracking, and Appkit-preserved point and viewport position.
 - Added safe rendering for pure renotes, quoted notes, content warnings, visibility, local-only state, and note counters.
 - Added lifecycle-owned asynchronous author avatars to the home timeline, with stable placeholder geometry, shared bounded transfers, and a disk cache.
 - Added lifecycle-owned inline image and video-thumbnail previews, accessible fallback text, in-Emacs image opening, Appkit video playback, and sensitive-media hiding.

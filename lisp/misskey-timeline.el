@@ -62,6 +62,7 @@ hidden until their note's content warning is revealed."
     (define-key map (kbd "n") #'appkit-discussion-next-entry)
     (define-key map (kbd "p") #'appkit-discussion-previous-entry)
     (define-key map (kbd "RET") #'misskey-timeline-toggle-content-warning)
+    (define-key map (kbd "N") #'misskey-timeline-load-more)
     (define-key map (kbd "c") #'misskey-timeline-compose)
     map)
   "Keymap for `misskey-timeline-mode'.")
@@ -205,18 +206,16 @@ hidden until their note's content warning is revealed."
      (lambda (file)
        (misskey-timeline--finish-avatar-fetch view url file)))))
 
-(defun misskey-timeline--prefetch-avatars (view)
-  "Schedule missing avatars used by live timeline VIEW."
+(defun misskey-timeline--prefetch-avatars (view notes)
+  "Schedule missing avatars used by NOTES in live timeline VIEW."
   (when (and (misskey-timeline--avatars-enabled-p)
              (integerp appkit-media-transfer-concurrency)
              (> appkit-media-transfer-concurrency 0))
-    (let ((state (misskey-timeline--state view)))
-      (dolist (url
-               (delete-dups
-                (delq nil
-                      (mapcar #'misskey-timeline--avatar-url
-                              (plist-get state :items)))))
-        (misskey-timeline--prefetch-avatar view url)))))
+    (dolist (url
+             (delete-dups
+              (delq nil
+                    (mapcar #'misskey-timeline--avatar-url notes))))
+      (misskey-timeline--prefetch-avatar view url))))
 
 (defun misskey-timeline--media-enabled-p ()
   "Return non-nil when timeline media previews can be displayed."
@@ -386,18 +385,16 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
          (misskey-timeline--finish-media-fetch
           view (alist-get 'id file) cached))))))
 
-(defun misskey-timeline--prefetch-media-files (view)
-  "Schedule missing media previews used by live timeline VIEW."
+(defun misskey-timeline--prefetch-media-files (view notes)
+  "Schedule missing media previews used by NOTES in live timeline VIEW."
   (when (and (misskey-timeline--media-enabled-p)
              (integerp appkit-media-transfer-concurrency)
              (> appkit-media-transfer-concurrency 0))
-    (let ((state (misskey-timeline--state view)))
-      (dolist (file
-               (delete-dups
-                (apply #'append
-                       (mapcar #'misskey-timeline--media-files
-                               (plist-get state :items)))))
-        (misskey-timeline--prefetch-media view file)))))
+    (dolist (file
+             (delete-dups
+              (apply #'append
+                     (mapcar #'misskey-timeline--media-files notes))))
+      (misskey-timeline--prefetch-media view file))))
 
 (defun misskey-timeline--user-label (note)
   "Return NOTE's readable author label."
@@ -553,6 +550,7 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
      (pcase phase
        ('initial "Loading notes...\n\n")
        ('refresh "Refreshing notes...\n\n")
+       ('older "Loading older notes...\n\n")
        ('error (format "Unable to load notes.\n%s\n\n" message))
        (_ (if items "\n" "No notes returned.\n\n"))))))
 
@@ -563,7 +561,12 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
     (appkit-projection-sync
      view rows
      :header (misskey-timeline--frame state)
-     :footer "\ng refresh   n/p note   RET reveal CW   c compose\n"
+     :footer
+     (concat "\ng refresh   n/p note   "
+             (if (plist-get state :older-exhausted-p)
+                 "older exhausted"
+               "N older")
+             "   RET reveal CW   c compose\n")
      :force-keys force-keys
      :position (or position 'preserve))))
 
@@ -580,12 +583,29 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
   "Return validated timeline PAYLOAD."
   (unless (listp payload)
     (error "Misskey timeline response is not a list"))
-  (dolist (note payload)
-    (unless (and (consp note)
-                 (stringp (misskey-timeline--note-id note))
-                 (consp (alist-get 'user note)))
-      (error "Misskey timeline contains a malformed note")))
+  (let ((seen (make-hash-table :test #'equal)))
+    (dolist (note payload)
+      (unless (and (consp note)
+                   (stringp (misskey-timeline--note-id note))
+                   (consp (alist-get 'user note)))
+        (error "Misskey timeline contains a malformed note"))
+      (let ((id (misskey-timeline--note-id note)))
+        (when (gethash id seen)
+          (error "Misskey timeline duplicates note %s" id))
+        (puthash id t seen))))
   payload)
+
+(defun misskey-timeline--new-notes (current candidates)
+  "Return CANDIDATES whose IDs do not occur in CURRENT."
+  (let ((seen (make-hash-table :test #'equal))
+        result)
+    (dolist (note current)
+      (puthash (misskey-timeline--note-id note) t seen))
+    (dolist (note candidates (nreverse result))
+      (let ((id (misskey-timeline--note-id note)))
+        (unless (gethash id seen)
+          (puthash id t seen)
+          (push note result))))))
 
 (defun misskey-timeline--generation-current-p (view state generation)
   "Return non-nil when GENERATION may still update STATE in VIEW."
@@ -605,41 +625,83 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
   "Install timeline PAYLOAD for current GENERATION of STATE in VIEW."
   (when (misskey-timeline--generation-current-p view state generation)
     (condition-case err
-        (let ((notes (misskey-timeline--validate-notes payload))
-              (initialp (eq (plist-get state :phase) 'initial)))
-          (clrhash (plist-get state :revealed-content))
-          (clrhash (misskey-timeline--avatar-images state))
-          (clrhash (misskey-timeline--media-images state))
-          (setf (plist-get state :items) notes
+        (let* ((notes (misskey-timeline--validate-notes payload))
+               (phase (plist-get state :phase))
+               (current (plist-get state :items))
+               (new-notes
+                (if (eq phase 'older)
+                    (misskey-timeline--new-notes current notes)
+                  notes))
+               (installed
+                (pcase phase
+                  ('initial notes)
+                  ('refresh
+                   (append notes
+                           (misskey-timeline--new-notes notes current)))
+                  ('older (append current new-notes))
+                  (_
+                   (error
+                    "Invalid Misskey timeline request phase: %S" phase)))))
+          (unless (eq phase 'older)
+            (clrhash (plist-get state :revealed-content))
+            (clrhash (misskey-timeline--avatar-images state))
+            (clrhash (misskey-timeline--media-images state)))
+          (setf (plist-get state :items) installed
                 (plist-get state :phase) 'ready
                 (plist-get state :message) nil)
-          (misskey-timeline--sync view nil (if initialp 'first 'preserve))
-          (misskey-timeline--prefetch-avatars view)
-          (misskey-timeline--prefetch-media-files view)
-          (message "Loaded %d Misskey notes" (length notes)))
+          (pcase phase
+            ('initial
+             (setf (plist-get state :older-exhausted-p) (null notes)))
+            ('older
+             (setf (plist-get state :older-exhausted-p)
+                   (null new-notes))))
+          (misskey-timeline--sync
+           view nil (if (eq phase 'initial) 'first 'preserve))
+          (misskey-timeline--prefetch-avatars view new-notes)
+          (misskey-timeline--prefetch-media-files view new-notes)
+          (if (eq phase 'older)
+              (if new-notes
+                  (message "Loaded %d older Misskey notes"
+                           (length new-notes))
+                (message "No older Misskey notes"))
+            (message "Loaded %d Misskey notes" (length notes))))
       (error
        (misskey-timeline--handle-error
         view state generation (error-message-string err))))))
 
-(defun misskey-timeline--refresh-view (view)
-  "Refresh live Misskey home timeline VIEW."
+(defun misskey-timeline--request (view phase)
+  "Start one timeline PHASE request owned by VIEW."
+  (unless (memq phase '(initial refresh older))
+    (error "Invalid Misskey timeline request phase: %S" phase))
   (let* ((state (misskey-timeline--state view))
-         (phase (plist-get state :phase)))
+         (current-phase (plist-get state :phase))
+         (items (plist-get state :items)))
     (unless (and (integerp misskey-timeline-limit)
                  (<= 1 misskey-timeline-limit 100))
       (user-error "Misskey timeline limit must be between 1 and 100"))
-    (when (memq phase '(initial refresh))
+    (when (memq current-phase '(initial refresh older))
       (user-error "The Misskey home timeline is already loading"))
-    (let ((generation (1+ (plist-get state :generation)))
-          (account (plist-get state :account)))
+    (when (eq phase 'older)
+      (unless items
+        (user-error "The Misskey home timeline has no notes"))
+      (when (plist-get state :older-exhausted-p)
+        (user-error "No older Misskey notes available")))
+    (let* ((generation (1+ (plist-get state :generation)))
+           (account (plist-get state :account))
+           (until-id
+            (and (eq phase 'older)
+                 (misskey-timeline--note-id (car (last items))))))
+      (unless (or (not (eq phase 'older)) until-id)
+        (error "Misskey timeline has no older-page cursor"))
       (setf (plist-get state :generation) generation
-            (plist-get state :phase)
-            (if (plist-get state :items) 'refresh 'initial)
+            (plist-get state :phase) phase
             (plist-get state :message) nil)
       (misskey-timeline--sync view)
       (misskey-http-read
        "notes/timeline"
-       (list :limit misskey-timeline-limit :allowPartial t)
+       (append
+        (list :limit misskey-timeline-limit :allowPartial t)
+        (and until-id (list :untilId until-id)))
        (lambda (payload)
          (misskey-timeline--handle-success
           view state generation payload))
@@ -650,11 +712,24 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
        :owner view
        :account account))))
 
+(defun misskey-timeline--refresh-view (view)
+  "Refresh live Misskey home timeline VIEW."
+  (let ((state (misskey-timeline--state view)))
+    (misskey-timeline--request
+     view (if (plist-get state :items) 'refresh 'initial))))
+
 (defun misskey-timeline-refresh ()
   "Refresh the current Misskey home timeline."
   (interactive)
   (if-let* ((view (misskey-timeline--current-view)))
       (misskey-timeline--refresh-view view)
+    (user-error "Current buffer is not a Misskey home timeline")))
+
+(defun misskey-timeline-load-more ()
+  "Load one older page in the current Misskey home timeline."
+  (interactive)
+  (if-let* ((view (misskey-timeline--current-view)))
+      (misskey-timeline--request view 'older)
     (user-error "Current buffer is not a Misskey home timeline")))
 
 (defun misskey-timeline--row-at-point (view)
@@ -710,6 +785,7 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
                           :phase 'idle
                           :message nil
                           :generation 0
+                          :older-exhausted-p nil
                           :revealed-content
                           (make-hash-table :test #'equal)
                           :avatar-images

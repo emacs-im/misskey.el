@@ -102,6 +102,9 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                              "*misskey home: alice@example.social*"))
               (should (eq (lookup-key misskey-timeline-mode-map (kbd "g"))
                           #'misskey-timeline-refresh))
+              (should
+               (eq (lookup-key misskey-timeline-mode-map (kbd "N"))
+                   #'misskey-timeline-load-more))
               (should (eq (lookup-key misskey-timeline-mode-map (kbd "RET"))
                           #'misskey-timeline-toggle-content-warning))
               (should (eq (lookup-key misskey-timeline-mode-map (kbd "c"))
@@ -180,6 +183,85 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (should-error (misskey-timeline-refresh)
                               :type 'user-error)
                 (should (= (length callbacks) request-count))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
+(ert-deftest misskey-home-loads-older-notes-with-stable-position ()
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey--apps (make-hash-table :test #'equal))
+        requests
+        view
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'misskey-auth--ensure-token)
+                (lambda (&optional _account) "TOKEN"))
+               ((symbol-function 'misskey-http-read)
+                (lambda (endpoint parameters callback &rest options)
+                  (push
+                   (list endpoint parameters callback
+                         (plist-get options :owner)
+                         (plist-get options :account))
+                   requests))))
+            (setq view (misskey-home)
+                  buffer (appkit-view-buffer view))
+            (funcall
+             (nth 2 (car requests))
+             (list (misskey-timeline-test--note "n3" "newest")
+                   (misskey-timeline-test--note "n2" "second")))
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (appkit-discussion-next-entry)
+              (appkit-discussion-next-entry)
+              (should (equal (appkit-discussion-key-at-point) "n2"))
+              (misskey-timeline-load-more)
+              (should
+               (equal (cadar requests)
+                      '(:limit 20 :allowPartial t :untilId "n2")))
+              (should (eq (nth 3 (car requests)) view))
+              (should-error (misskey-timeline-load-more)
+                            :type 'user-error)
+              (funcall
+               (nth 2 (car requests))
+               (list (misskey-timeline-test--note "n2" "duplicate edge")
+                     (misskey-timeline-test--note "n1" "oldest")))
+              (should (equal (appkit-projection-keys view)
+                             '("n3" "n2" "n1")))
+              (should (equal (appkit-discussion-key-at-point) "n2"))
+              (should-not
+               (plist-get (appkit-view-state view) :older-exhausted-p))
+              (should (string-match-p "N older" (buffer-string)))
+              (misskey-timeline-refresh)
+              (should
+               (equal (cadar requests)
+                      '(:limit 20 :allowPartial t)))
+              (funcall
+               (nth 2 (car requests))
+               (list (misskey-timeline-test--note "n4" "refreshed")
+                     (misskey-timeline-test--note "n3" "updated")))
+              (should (equal (appkit-projection-keys view)
+                             '("n4" "n3" "n2" "n1")))
+              (should (equal (appkit-discussion-key-at-point) "n2"))
+              (should-not
+               (plist-get (appkit-view-state view) :older-exhausted-p))
+              (misskey-timeline-load-more)
+              (should
+               (equal (cadar requests)
+                      '(:limit 20 :allowPartial t :untilId "n1")))
+              (funcall (nth 2 (car requests)) nil)
+              (should
+               (plist-get (appkit-view-state view) :older-exhausted-p))
+              (should (equal (appkit-projection-keys view)
+                             '("n4" "n3" "n2" "n1")))
+              (should (equal (appkit-discussion-key-at-point) "n2"))
+              (should (string-match-p "older exhausted"
+                                      (buffer-string)))
+              (let ((request-count (length requests)))
+                (should-error (misskey-timeline-load-more)
+                              :type 'user-error)
+                (should (= (length requests) request-count))))))
       (misskey-timeline-test--cleanup view buffer))))
 
 (ert-deftest misskey-home-loads-avatar-with-stable-row-position ()
