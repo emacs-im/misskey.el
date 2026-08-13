@@ -19,15 +19,14 @@
 (require 'appkit-invalidation)
 (require 'appkit-projection)
 (require 'appkit-ui)
+(require 'appkit-view)
 (require 'misskey-core)
 (require 'misskey-media)
 (require 'misskey-note)
 
 (defun misskey-render-width ()
   "Return the current Misskey view render width in columns."
-  (if-let* ((window (get-buffer-window (current-buffer) t)))
-      (max 40 (window-body-width window))
-    80))
+  (or (appkit-view-window-fill-column) 80))
 
 (defun misskey-render--revealed-content (view)
   "Return VIEW's content-warning reveal table."

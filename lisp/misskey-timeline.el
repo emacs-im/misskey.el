@@ -16,6 +16,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-discussion)
 (require 'appkit-projection)
+(require 'appkit-view)
 (require 'appkit-position)
 (require 'appkit-ui)
 (require 'misskey-actions)
@@ -223,11 +224,14 @@
          (events (appkit-view-pending-events-snapshot view))
          (event-count (length events))
          (position (misskey-timeline--position-intent events))
+         (parts (appkit-invalidations-parts invalidations))
+         (geometry-p (memq 'geometry parts))
          (resources (appkit-invalidations-resource-keys invalidations))
          (all-resources-p (memq 'all resources))
          (entry-keys (appkit-invalidations-entry-keys invalidations))
          (reconcile-p
-          (or (appkit-invalidations-structure-p invalidations)
+          (or geometry-p
+              (appkit-invalidations-structure-p invalidations)
               entry-keys
               resources))
          (rows
@@ -237,7 +241,7 @@
          (force-keys
           (append
            entry-keys
-           (and all-resources-p
+           (and (or geometry-p all-resources-p)
                 (mapcar #'appkit-projection-row-key rows)))))
     (appkit-projection-sync
      view rows
@@ -261,6 +265,7 @@
    :printer #'misskey-render-insert-row
    :anchor-property appkit-discussion-key-property
    :no-separator-p t)
+  (appkit-view-enable-responsive-geometry view)
   (appkit-view-enqueue-event view (list :position 'first))
   (appkit-invalidate view :structure t :part 'frame :position t)
   (appkit-sync-invalidations view))

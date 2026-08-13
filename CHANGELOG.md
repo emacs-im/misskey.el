@@ -21,3 +21,4 @@
 - Compose uses Appkit's chatbuf surface: generated context, status, attachment rows, and committed parts no longer share the editable input region.
 - Successful Drive uploads remain attached to a failed draft, avoiding duplicate uploads on a deliberate retry of note creation.
 - Browsing or paging a notification view never implicitly acknowledges remote notifications.
+- Note views keep timestamps at the live window's right edge, elide long author and renote headings in narrow windows, and restore the complete heading after widening.

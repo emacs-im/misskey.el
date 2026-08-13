@@ -156,6 +156,64 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                                           (buffer-string))))))
       (misskey-timeline-test--cleanup view buffer))))
 
+(ert-deftest misskey-timeline-window-resize-restores-elided-heading ()
+  "A widened timeline must reconstruct a formerly elided heading."
+  (let ((misskey-instance-url "https://example.social")
+        (misskey-auth-source-user "alice")
+        (misskey-timeline-show-avatars nil)
+        (misskey-timeline-show-media nil)
+        (misskey--apps (make-hash-table :test #'equal))
+        (render-width 30)
+        view buffer)
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'message) #'ignore)
+                    ((symbol-function 'misskey--authenticated-account)
+                     #'misskey-timeline-test--authenticated-account)
+                    ((symbol-function 'appkit-view-window-fill-column)
+                     (lambda (&rest _arguments) render-width))
+                    ((symbol-function 'misskey-http-read)
+                     (lambda (_endpoint _parameters callback &rest _options)
+                       (funcall
+                        callback
+                        (list
+                         (misskey-timeline-test--note
+                          "long" "body"
+                          :name "Alice Extremely Long Display Name"
+                          :username "alice-identity-tail"))))))
+            (setq view (misskey-home)
+                  buffer (appkit-view-buffer view))
+            (misskey-timeline-test--flush view)
+            (with-current-buffer buffer
+              (should
+               (memq #'appkit-view--on-window-geometry-change
+                     window-size-change-functions))
+              (should
+               (memq #'appkit-view--on-display-geometry-change
+                     text-scale-mode-hook))
+              (goto-char (point-min))
+              (should (search-forward "…" nil t))
+              (should-not (search-forward "identity-tail" nil t))
+              (let ((heading-line (line-number-at-pos)))
+                (goto-char (point-min))
+                (search-forward "2026-08-13 08:00")
+                (should (= heading-line (line-number-at-pos))))
+              (setq render-width 160)
+              (run-hook-with-args
+               'window-size-change-functions
+               (get-buffer-window buffer t)))
+            (misskey-timeline-test--flush view)
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (should (search-forward "identity-tail" nil t))
+              (should-not (search-forward "…" nil t))
+              (goto-char (point-min))
+              (search-forward "Alice Extremely")
+              (let ((heading-line (line-number-at-pos)))
+                (search-forward "2026-08-13 08:00")
+                (should (= heading-line (line-number-at-pos)))))))
+      (misskey-timeline-test--cleanup view buffer))))
+
 (ert-deftest misskey-home-refresh-preserves-position-and-rejects-bad-data ()
   (let ((misskey-instance-url "https://example.social")
         (misskey-auth-source-user "alice")
