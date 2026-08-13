@@ -57,8 +57,13 @@
      (misskey-test--cleanup-auth-source)
      (signal (car err) (cdr err)))))
 
-(misskey-test-install-auth-source)
-(add-hook 'kill-emacs-hook #'misskey-test--cleanup-auth-source)
+(defun misskey-test--enable-auth-source ()
+  "Install isolated credentials only in a batch test process."
+  (when noninteractive
+    (misskey-test-install-auth-source)
+    (add-hook 'kill-emacs-hook #'misskey-test--cleanup-auth-source)))
+
+(misskey-test--enable-auth-source)
 
 (provide 'misskey-test-helper)
 

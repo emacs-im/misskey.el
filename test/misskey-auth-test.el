@@ -87,6 +87,17 @@
   (let ((auth-sources '(password-store "~/.authinfo")))
     (should-error (misskey-auth--storage-source) :type 'user-error)))
 
+(ert-deftest misskey-test-helper-preserves-interactive-auth-sources ()
+  (let ((noninteractive nil)
+        (auth-sources '(password-store "~/.authinfo.gpg"))
+        (misskey-test--auth-file nil)
+        (misskey-test--original-auth-sources nil)
+        (misskey-test--auth-source-installed-p nil))
+    (misskey-test--enable-auth-source)
+    (should (equal auth-sources '(password-store "~/.authinfo.gpg")))
+    (should-not misskey-test--auth-file)
+    (should-not misskey-test--auth-source-installed-p)))
+
 (ert-deftest misskey-auth-real-netrc-upsert-leaves-one-replacement ()
   (let* ((file (make-temp-file "misskey-auth-upsert-"))
          (misskey-instance-url "https://example.social")
