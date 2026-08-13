@@ -55,16 +55,16 @@
          app (misskey-note-id note) property fallback)
       fallback)))
 
+(defun misskey-render--display-user (note)
+  "Return NOTE's displayed author, or nil."
+  (when-let* ((display-note (misskey-note-display-note note)))
+    (misskey-note-user display-note)))
+
 (defun misskey-render-heading (note)
   "Return the discussion heading for NOTE without text properties."
-  (if (misskey-note-pure-renote-p note)
-      (let ((display-note (misskey-note-display-note note)))
-        (format "%s renoted %s"
-                (misskey-user-label (misskey-note-user note))
-                (if display-note
-                    (misskey-user-label (misskey-note-user display-note))
-                  "(deleted note)")))
-    (misskey-user-label (misskey-note-user note))))
+  (if-let* ((user (misskey-render--display-user note)))
+      (misskey-user-label user)
+    "(deleted note)"))
 
 (defun misskey-render--user-properties (user)
   "Return durable text properties for USER's visible author span."
@@ -78,16 +78,10 @@
          (misskey-render--user-properties user)))
 
 (defun misskey-render--insert-heading (note)
-  "Insert NOTE's heading with each visible author owning only its span."
-  (if (misskey-note-pure-renote-p note)
-      (let ((display-note (misskey-note-display-note note)))
-        (insert (misskey-render--user-label (misskey-note-user note))
-                " renoted "
-                (if display-note
-                    (misskey-render--user-label
-                     (misskey-note-user display-note))
-                  "(deleted note)")))
-    (insert (misskey-render--user-label (misskey-note-user note)))))
+  "Insert NOTE's displayed author heading."
+  (if-let* ((user (misskey-render--display-user note)))
+      (insert (misskey-render--user-label user))
+    (insert "(deleted note)")))
 
 (defun misskey-render-time (note)
   "Return NOTE's compact creation time."
@@ -166,6 +160,12 @@
          (quoted (and candidate
                       (not (misskey-note-deleted-p app candidate))
                       candidate)))
+    (when (misskey-note-pure-renote-p note)
+      (appkit-ui-insert-prefixed-lines
+       prefix
+       (concat "renoted by "
+               (misskey-render--user-label (misskey-note-user note)))
+       :face 'shadow :properties properties))
     (when primary
       (misskey-render--insert-content
        primary revealed prefix properties)
@@ -210,7 +210,7 @@ PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
      :avatar-fallback "@"
      :heading-inserter (lambda () (misskey-render--insert-heading note))
      :heading-face 'bold
-     :time (misskey-render-time note)
+     :time (misskey-render-time (misskey-note-display-note note))
      :body-inserter
      (lambda (prefix row-properties)
        (misskey-render--insert-body

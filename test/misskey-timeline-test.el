@@ -20,13 +20,14 @@
 
 (cl-defun misskey-timeline-test--note
     (id text &key cw local-only files renote avatar-url
+        (created-at "2026-08-13T00:00:00.000Z")
         (name "Alice") (username "alice"))
   "Return a normalized test note with ID and TEXT.
 
-CW, LOCAL-ONLY, FILES, RENOTE, AVATAR-URL, NAME, and USERNAME supply optional
-fields."
+CW, LOCAL-ONLY, FILES, RENOTE, AVATAR-URL, CREATED-AT, NAME, and USERNAME
+supply optional fields."
   `((id . ,id)
-    (createdAt . "2026-08-13T00:00:00.000Z")
+    (createdAt . ,created-at)
     (text . ,text)
     (cw . ,cw)
     (visibility . "public")
@@ -141,8 +142,10 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should-not (string-match-p "hidden body" (buffer-string)))
               (should (string-match-p "Local only" (buffer-string)))
               (should (string-match-p "2 attachments" (buffer-string)))
-              (should (string-match-p "Bob @bob renoted Alice @alice"
-                                      (buffer-string)))
+              (should
+               (string-match-p
+                "Alice @alice.*\nrenoted by Bob @bob\nrenoted body"
+                (buffer-string)))
               (goto-char (point-min))
               (appkit-discussion-next-entry)
               (should (equal (appkit-discussion-key-at-point) "n1"))
@@ -943,10 +946,12 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
          (account (misskey--session-account (misskey--session app)))
          (target
           (misskey-timeline-test--note
-           "target" "target body" :name "Bob" :username "bob"))
+           "target" "target body" :name "Bob" :username "bob"
+           :created-at "2025-08-12T10:00:00.000Z"))
          (wrapper
           (misskey-timeline-test--note
-           "wrapper" nil :renote target :name "Alice" :username "alice"))
+           "wrapper" nil :renote target :name "Alice" :username "alice"
+           :created-at "2026-08-13T11:00:00.000Z"))
          (quote
           (misskey-timeline-test--note
            "quote" nil :renote target
@@ -971,11 +976,14 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
             (appkit-discussion-insert-entry
              (misskey-render-note-entry view quote)
              :avatar-p nil))
+          (should (equal (misskey-render-heading wrapper) "Bob @bob"))
+          (should
+           (string-match-p
+            (regexp-quote (misskey-render-time target)) (buffer-string)))
+          (should-not
+           (string-match-p
+            (regexp-quote (misskey-render-time wrapper)) (buffer-string)))
           (goto-char (point-min))
-          (search-forward "Alice @alice")
-          (should (equal (get-text-property
-                          (1- (point)) misskey-user-id-property)
-                         "u-alice"))
           (search-forward "Bob @bob")
           (should (equal (get-text-property
                           (1- (point)) misskey-user-id-property)
@@ -986,6 +994,16 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (goto-char (1- (point)))
               (misskey-user-id (misskey-actions--user-at-point)))
             "u-bob"))
+          (search-forward "renoted by Alice @alice")
+          (should (equal (get-text-property
+                          (1- (point)) misskey-user-id-property)
+                         "u-alice"))
+          (should
+           (equal
+            (save-excursion
+              (goto-char (1- (point)))
+              (misskey-user-id (misskey-actions--user-at-point)))
+            "u-alice"))
           (search-forward "Carol @carol")
           (should (equal (get-text-property
                           (1- (point)) misskey-user-id-property)
