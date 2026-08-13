@@ -1,0 +1,140 @@
+#+title: misskey.el user guide
+#+options: toc:2 num:nil
+
+* Authorize
+
+Select one HTTPS instance origin and a local credential label:
+
+#+begin_src emacs-lisp
+(setq misskey-instance-url "https://example.social"
+      misskey-auth-source-user "alice")
+#+end_src
+
+The origin cannot contain credentials, a path, a query, or a
+fragment.  Account identity uses the origin plus the stable remote
+user ID returned by Misskey.
+
+~M-x misskey-authorize~ opens a fresh MiAuth consent session and
+atomically replaces the configured credential.  First use of the home
+timeline or composer also authorizes when no credential exists.  The
+bearer token and remote user ID are saved together through the first
+configured encrypted netrc/authinfo source ending in ~.gpg~.
+Authorization refuses to write a plain source.
+
+Token-only records from older versions are rejected.  Run
+~M-x misskey-authorize~ rather than editing the stored record by
+hand.  Existing credentials do not gain new scopes automatically.
+
+Requested scopes: ~read:account~, ~read:notifications~,
+~write:notes~, ~write:reactions~, ~write:favorites~,
+~write:following~, ~write:notifications~, and ~write:drive~.
+
+An instance on a non-default HTTPS port uses ~misskey-PORT~, such as
+~misskey-8443~, as the auth-source service label.
+
+* Commands
+
+| Command | Opens |
+|---------+-------|
+| ~M-x misskey-home~ | authenticated Home timeline |
+| ~M-x misskey-thread~ | thread by note ID |
+| ~M-x misskey-profile-open~ | user by stable ID or ~@username[@host]~ |
+| ~M-x misskey-search~ | independently paged note search |
+| ~M-x misskey-notifications~ | notifications, unread |
+| ~M-x misskey-compose~ | new compose draft |
+
+* Note views
+
+| Key | Action |
+|-----+--------|
+| ~g~ | refresh |
+| ~n~ / ~p~ | next or previous note |
+| ~N~ | older page, keep semantic position |
+| ~RET~ | reveal or hide a content-warning body |
+| ~t~ | open the thread at point |
+| ~r~ / ~q~ | compose a reply or quote |
+| ~a~ | prefix contextual note and user actions |
+
+Timeline ~TAB~ cycles Home, Local, Social, and Global in one view
+while retaining each mode's loaded notes and position.  Profile ~TAB~
+cycles Notes, Notes + replies, and Media; ~f~ and ~F~ open followers
+and following directories.  Each ~misskey-search~ invocation owns an
+independent result set, cursor, request, and content-warning state.
+
+** Actions
+
+Press ~a~ followed by:
+
+| Key | Action |
+|-----+--------|
+| ~r~ / ~R~ | add a reaction string or remove the current reaction |
+| ~f~ / ~F~ | favorite or unfavorite the note |
+| ~n~ | create a pure renote |
+| ~d~ | confirm and delete the note row at point |
+| ~+~ / ~-~ | follow or unfollow the user at point |
+
+Successful actions install account-scoped overrides and invalidate
+matching note or user resources in every live Appkit view.
+
+* Media
+
+Graphical note views fetch author avatars plus MIME-qualified image
+and video thumbnails asynchronously.  Every Drive attachment remains
+visible and actionable.  Audio, PDF, archives, and other generic
+files open their original HTTPS resource.  Text renders first.
+Sensitive media stays hidden until the user reveals its note.
+
+#+begin_src emacs-lisp
+(setq misskey-timeline-show-avatars nil
+      misskey-timeline-show-media nil)
+#+end_src
+
+~misskey-timeline-media-preview-width~ and
+~misskey-timeline-media-preview-height~ bound inline previews.
+
+* Compose
+
+The Appkit compose surface keeps generated context and status outside
+the editable body.
+
+| Key | Action |
+|-----+--------|
+| ~C-c C-c~ | publish the draft once |
+| ~C-c C-v~ | Public, Home, or Followers visibility |
+| ~C-c C-a~ | attach a readable local file |
+| ~C-c C-d~ | detach one file from the current note |
+| ~C-c C-n~ | insert another note after the current part |
+| ~C-c C-p~ | remove the current extra note |
+| ~C-c C-k~ | abandon an idle draft |
+
+Each note accepts up to 16 files.  File-only notes are supported.
+Local files stream to ~drive/files/create~; the compose State field
+shows a progress bar and percent for the file currently uploading.
+A multi-note draft publishes in order and makes each later note a
+reply to the preceding created note.
+
+After a successful upload, its Drive ID stays on that compose item.
+A later publish failure leaves the draft editable; a deliberate retry
+reuses that Drive file.
+
+An in-flight write cannot be silently canceled.
+
+* Notifications
+
+Opening, refreshing, and paging notifications always send
+~markAsRead: false~.  ~M~ is the only command that marks all
+notifications read.  ~RET~ opens the notification's note or actor
+when one is present.
+
+* Write safety
+
+Every authenticated JSON request and Drive upload uses one bounded
+streaming curl dispatch.  Redirects and retries are disabled.  The
+bearer token stays out of request bodies and process arguments.
+Appkit owns each request and cancels remaining work when the account
+session stops.
+
+After dispatch, any failure is an unknown remote outcome.
+~misskey.el~ never retries a Misskey write automatically.  The
+affected compose draft remains available so the user can inspect the
+server before trying again.
