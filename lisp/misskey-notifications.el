@@ -52,15 +52,13 @@
     ("note" . "New note"))
   "Readable labels for known Misskey notification types.")
 
-(defvar misskey-notifications-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map appkit-directory-mode-map)
-    (define-key map (kbd "g") #'misskey-notifications-refresh)
-    (define-key map (kbd "N") #'misskey-notifications-load-more)
-    (define-key map (kbd "M") #'misskey-notifications-mark-all-read)
-    (define-key map (kbd "a") misskey-actions-map)
-    map)
-  "Keymap for `misskey-notifications-mode'.")
+(defvar-keymap misskey-notifications-mode-map
+  :doc "Keymap for `misskey-notifications-mode'."
+  :parent appkit-directory-mode-map
+  "g" #'misskey-notifications-refresh
+  "N" #'misskey-notifications-load-more
+  "M" #'misskey-notifications-mark-all-read
+  "a" misskey-actions-map)
 
 (define-derived-mode misskey-notifications-mode appkit-directory-mode
   "Misskey-Notifications"

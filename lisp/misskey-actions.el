@@ -19,18 +19,16 @@
 (require 'misskey-http)
 (require 'misskey-note)
 
-(defvar misskey-actions-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "r") #'misskey-react-at-point)
-    (define-key map (kbd "R") #'misskey-unreact-at-point)
-    (define-key map (kbd "f") #'misskey-favorite-at-point)
-    (define-key map (kbd "F") #'misskey-unfavorite-at-point)
-    (define-key map (kbd "n") #'misskey-renote-at-point)
-    (define-key map (kbd "d") #'misskey-delete-note-at-point)
-    (define-key map (kbd "+") #'misskey-follow-at-point)
-    (define-key map (kbd "-") #'misskey-unfollow-at-point)
-    map)
-  "Prefix map for Misskey note and user write actions.")
+(defvar-keymap misskey-actions-map
+  :doc "Prefix map for Misskey note and user write actions."
+  "r" #'misskey-react-at-point
+  "R" #'misskey-unreact-at-point
+  "f" #'misskey-favorite-at-point
+  "F" #'misskey-unfavorite-at-point
+  "n" #'misskey-renote-at-point
+  "d" #'misskey-delete-note-at-point
+  "+" #'misskey-follow-at-point
+  "-" #'misskey-unfollow-at-point)
 
 (defun misskey-actions--view ()
   "Return the current live Misskey Appkit view."

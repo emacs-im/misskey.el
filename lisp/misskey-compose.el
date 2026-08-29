@@ -54,17 +54,15 @@
   "Set the current compose body READ-ONLY state."
   (setq-local buffer-read-only (and read-only t)))
 
-(defvar misskey-compose-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'misskey-compose-send)
-    (define-key map (kbd "C-c C-k") #'misskey-compose-cancel)
-    (define-key map (kbd "C-c C-n") #'misskey-compose-add-note)
-    (define-key map (kbd "C-c C-p") #'misskey-compose-remove-note)
-    (define-key map (kbd "C-c C-v") #'misskey-compose-set-visibility)
-    (define-key map (kbd "C-c C-a") #'misskey-compose-attach-file)
-    (define-key map (kbd "C-c C-d") #'misskey-compose-remove-attachment)
-    map)
-  "Keymap for `misskey-compose-mode'.")
+(defvar-keymap misskey-compose-mode-map
+  :doc "Keymap for `misskey-compose-mode'."
+  "C-c C-c" #'misskey-compose-send
+  "C-c C-k" #'misskey-compose-cancel
+  "C-c C-n" #'misskey-compose-add-note
+  "C-c C-p" #'misskey-compose-remove-note
+  "C-c C-v" #'misskey-compose-set-visibility
+  "C-c C-a" #'misskey-compose-attach-file
+  "C-c C-d" #'misskey-compose-remove-attachment)
 
 (define-derived-mode misskey-compose-mode appkit-compose-mode "Misskey-Compose"
   "Major mode for composing a standalone Misskey note."

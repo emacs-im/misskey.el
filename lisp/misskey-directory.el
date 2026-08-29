@@ -35,14 +35,12 @@
 (defconst misskey-directory--request-key 'relationships
   "View request-table key for the active relationship request.")
 
-(defvar misskey-directory-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map appkit-directory-mode-map)
-    (define-key map (kbd "g") #'misskey-directory-refresh)
-    (define-key map (kbd "a") misskey-actions-map)
-    (define-key map (kbd "N") #'misskey-directory-load-more)
-    map)
-  "Keymap for `misskey-directory-mode'.")
+(defvar-keymap misskey-directory-mode-map
+  :doc "Keymap for `misskey-directory-mode'."
+  :parent appkit-directory-mode-map
+  "g" #'misskey-directory-refresh
+  "a" misskey-actions-map
+  "N" #'misskey-directory-load-more)
 
 (define-derived-mode misskey-directory-mode appkit-directory-mode
   "Misskey-Directory"

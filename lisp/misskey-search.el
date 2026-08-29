@@ -30,20 +30,18 @@
 (defvar misskey-search--serial 0
   "Serial used to identify independent search views.")
 
-(defvar misskey-search-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'misskey-search-refresh)
-    (define-key map (kbd "N") #'misskey-search-load-more)
-    (define-key map (kbd "n") #'appkit-discussion-next-entry)
-    (define-key map (kbd "p") #'appkit-discussion-previous-entry)
-    (define-key map (kbd "RET") #'misskey-render-toggle-content-warning)
-    (define-key map (kbd "t") #'misskey-thread-at-point)
-    (define-key map (kbd "a") misskey-actions-map)
-    (define-key map (kbd "r") #'misskey-compose-reply-at-point)
-    (define-key map (kbd "q") #'misskey-compose-quote-at-point)
-    map)
-  "Keymap for `misskey-search-mode'.")
+(defvar-keymap misskey-search-mode-map
+  :doc "Keymap for `misskey-search-mode'."
+  :parent special-mode-map
+  "g" #'misskey-search-refresh
+  "N" #'misskey-search-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-render-toggle-content-warning
+  "t" #'misskey-thread-at-point
+  "a" misskey-actions-map
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point)
 
 (define-derived-mode misskey-search-mode special-mode "Misskey-Search"
   "Major mode for one independent Misskey note search."

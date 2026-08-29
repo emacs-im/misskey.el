@@ -45,23 +45,21 @@
 (defconst misskey-profile--request-key 'profile-user
   "View request-table key for the active profile lookup.")
 
-(defvar misskey-profile-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "TAB") #'misskey-profile-next-mode)
-    (define-key map (kbd "g") #'misskey-profile-refresh)
-    (define-key map (kbd "N") #'misskey-profile-load-more)
-    (define-key map (kbd "n") #'appkit-discussion-next-entry)
-    (define-key map (kbd "p") #'appkit-discussion-previous-entry)
-    (define-key map (kbd "RET") #'misskey-render-toggle-content-warning)
-    (define-key map (kbd "t") #'misskey-thread-at-point)
-    (define-key map (kbd "a") misskey-actions-map)
-    (define-key map (kbd "r") #'misskey-compose-reply-at-point)
-    (define-key map (kbd "q") #'misskey-compose-quote-at-point)
-    (define-key map (kbd "f") #'misskey-profile-followers)
-    (define-key map (kbd "F") #'misskey-profile-following)
-    map)
-  "Keymap for `misskey-profile-mode'.")
+(defvar-keymap misskey-profile-mode-map
+  :doc "Keymap for `misskey-profile-mode'."
+  :parent special-mode-map
+  "TAB" #'misskey-profile-next-mode
+  "g" #'misskey-profile-refresh
+  "N" #'misskey-profile-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-render-toggle-content-warning
+  "t" #'misskey-thread-at-point
+  "a" misskey-actions-map
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point
+  "f" #'misskey-profile-followers
+  "F" #'misskey-profile-following)
 
 (define-derived-mode misskey-profile-mode special-mode "Misskey-Profile"
   "Major mode for one Misskey user profile."

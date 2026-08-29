@@ -33,19 +33,17 @@
 (defconst misskey-thread--request-key 'thread
   "View request-table key for the active thread request.")
 
-(defvar misskey-thread-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'misskey-thread-refresh)
-    (define-key map (kbd "N") #'misskey-thread-load-more)
-    (define-key map (kbd "n") #'appkit-discussion-next-entry)
-    (define-key map (kbd "p") #'appkit-discussion-previous-entry)
-    (define-key map (kbd "RET") #'misskey-render-toggle-content-warning)
-    (define-key map (kbd "r") #'misskey-compose-reply-at-point)
-    (define-key map (kbd "q") #'misskey-compose-quote-at-point)
-    (define-key map (kbd "a") misskey-actions-map)
-    map)
-  "Keymap for `misskey-thread-mode'.")
+(defvar-keymap misskey-thread-mode-map
+  :doc "Keymap for `misskey-thread-mode'."
+  :parent special-mode-map
+  "g" #'misskey-thread-refresh
+  "N" #'misskey-thread-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-render-toggle-content-warning
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point
+  "a" misskey-actions-map)
 
 (define-derived-mode misskey-thread-mode special-mode "Misskey-Thread"
   "Major mode for one Misskey note thread."
