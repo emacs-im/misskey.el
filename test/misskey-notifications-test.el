@@ -26,6 +26,14 @@
      (note . ((id . "note-1") (text . "hello")
               (user . ((id . "u1") (username . "alice"))))))))
 
+(ert-deftest misskey-notifications-frame-only-does-not-project-entries ()
+  (let ((invalidations (appkit-invalidations-create)))
+    (setf (appkit-invalidations-parts invalidations) '(frame))
+    (cl-letf (((symbol-function 'misskey-notifications--project)
+               (lambda (&rest _arguments)
+                 (ert-fail "frame-only sync projected notification entries"))))
+      (misskey-notifications--sync 'unused invalidations nil))))
+
 (ert-deftest misskey-notifications-read-never-implicitly-acknowledges ()
   (let* ((misskey--apps (make-hash-table :test #'equal))
          (account (misskey--account-create :origin "https://example.social" :auth-source-user "TOKEN" :remote-user-id "self"))

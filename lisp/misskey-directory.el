@@ -239,13 +239,14 @@
                  "N load more   g refresh"))))))
     entries))
 
-(defun misskey-directory--sync (view _invalidations _events)
-  "Synchronize relationship directory VIEW."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-directory-reconcile
-     (appkit-directory-surface)
-     (misskey-directory--project
-      view (misskey-directory--state view)))))
+(defun misskey-directory--sync (view invalidations _events)
+  "Synchronize relationship directory VIEW from INVALIDATIONS."
+  (when (appkit-invalidations-affect-p invalidations '(directory))
+    (with-current-buffer (appkit-view-buffer view)
+      (appkit-directory-reconcile
+       (appkit-directory-surface)
+       (misskey-directory--project
+        view (misskey-directory--state view))))))
 
 (defun misskey-directory--handle-error (view state failure)
   "Install relationship FAILURE in VIEW STATE."

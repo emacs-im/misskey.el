@@ -261,13 +261,14 @@
                  :label "No notifications returned."))))))
     entries))
 
-(defun misskey-notifications--sync (view _invalidations _events)
-  "Synchronize notification VIEW."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-directory-reconcile
-     (appkit-directory-surface)
-     (misskey-notifications--project
-      (misskey-notifications--state view)))))
+(defun misskey-notifications--sync (view invalidations _events)
+  "Synchronize notification VIEW from INVALIDATIONS."
+  (when (appkit-invalidations-affect-p invalidations '(directory))
+    (with-current-buffer (appkit-view-buffer view)
+      (appkit-directory-reconcile
+       (appkit-directory-surface)
+       (misskey-notifications--project
+        (misskey-notifications--state view))))))
 
 (defun misskey-notifications--handle-read-error (view state failure)
   "Install notification read FAILURE in VIEW STATE."
