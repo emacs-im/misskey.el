@@ -133,10 +133,10 @@
               (should-error (misskey-directory-load-more)
                             :type 'user-error))
             (should (eq token (plist-get state :request-token)))
-            (should (eq request
-                        (gethash misskey-directory--request-key
-                                 (appkit-view-request-table view))))
-            (should-not cancelled)))
+            (should-not cancelled)
+            (appkit-view-operation-cancel
+             view misskey-directory--request-key)
+            (should (eq cancelled request))))
       (when (appkit-view-p view)
         (appkit-kill-view view t))
       (misskey-stop))))

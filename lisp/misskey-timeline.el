@@ -41,7 +41,7 @@
   "Basic timeline kinds with display labels and API endpoints.")
 
 (defconst misskey-timeline--request-key 'timeline
-  "View request-table key for the active timeline transport.")
+  "Operation key for the active timeline transport.")
 
 
 (defvar-keymap misskey-timeline-mode-map
@@ -281,21 +281,21 @@
           (puthash id t seen)
           (push note result))))))
 
-(defun misskey-timeline--request-current-p (view state token)
+(defun misskey-timeline--state-current-p (view state token)
   "Return non-nil when TOKEN may still update STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
        (eq token (plist-get state :request-token))))
 
-(defun misskey-timeline--retire-request (view state token)
-  "Retire VIEW's transport when TOKEN still owns STATE."
-  (when (misskey-timeline--request-current-p view state token)
-    (remhash misskey-timeline--request-key
-             (appkit-view-request-table view))))
+(defun misskey-timeline--operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may update STATE in VIEW."
+  (and (misskey-timeline--state-current-p view state token)
+       (appkit-view-operation-current-p operation)))
 
 (defun misskey-timeline--handle-error (view state token failure)
   "Show FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-timeline--request-current-p view state token)
+  (when (misskey-timeline--state-current-p view state token)
     (setf (plist-get state :phase) 'error
           (plist-get state :message) failure
           (plist-get state :request-token) nil)
@@ -305,7 +305,7 @@
 (defun misskey-timeline--handle-success
     (view state token phase payload)
   "Install PAYLOAD when TOKEN still owns STATE in VIEW for request PHASE."
-  (when (misskey-timeline--request-current-p view state token)
+  (when (misskey-timeline--state-current-p view state token)
     (condition-case err
         (let* ((notes (misskey-note-validate-list payload))
                (current (plist-get state :items))
@@ -366,11 +366,7 @@
 
 (defun misskey-timeline--cancel-request (view)
   "Cancel VIEW's active timeline transport, if any."
-  (let* ((table (appkit-view-request-table view))
-         (request (gethash misskey-timeline--request-key table)))
-    (remhash misskey-timeline--request-key table)
-    (when request
-      (misskey-http-cancel request))))
+  (appkit-view-operation-cancel view misskey-timeline--request-key))
 
 (defun misskey-timeline--request (view phase)
   "Start one timeline PHASE request owned by VIEW."
@@ -396,13 +392,17 @@
            (until-id
             (and (eq phase 'older)
                  (misskey-note-id (car (last items)))))
-           callback-ran-p
+           operation
            request)
       (unless (or (not (eq phase 'older)) until-id)
         (error "Misskey timeline has no older-page cursor"))
       (setf (plist-get state :request-token) token
             (plist-get state :phase) phase
             (plist-get state :message) nil)
+      (setq operation
+            (appkit-view-operation-begin
+             view misskey-timeline--request-key
+             :cancel-function #'misskey-http-cancel))
       (appkit-request-sync view :part 'frame :position t)
       (setq
        request
@@ -412,28 +412,27 @@
          (list :limit misskey-timeline-limit :allowPartial t)
          (and until-id (list :untilId until-id)))
         (lambda (payload)
-          (setq callback-ran-p t)
-          (misskey-timeline--retire-request view state token)
-          (misskey-timeline--handle-success
-           view state token phase payload))
+          (when (misskey-timeline--operation-current-p
+                 view state token operation)
+            (appkit-view-operation-finish operation)
+            (misskey-timeline--handle-success
+             view state token phase payload)))
         :errback
         (lambda (failure)
-          (setq callback-ran-p t)
-          (misskey-timeline--retire-request view state token)
-          (misskey-timeline--handle-error view state token failure))
+          (when (misskey-timeline--operation-current-p
+                 view state token operation)
+            (appkit-view-operation-finish operation)
+            (misskey-timeline--handle-error
+             view state token failure)))
         :owner view
         :account account))
-      (cond
-       ((and (not callback-ran-p)
-             request
-             (misskey-timeline--request-current-p view state token))
-        (puthash misskey-timeline--request-key request
-                 (appkit-view-request-table view)))
-       ((and (not callback-ran-p)
-             (null request)
-             (misskey-timeline--request-current-p view state token))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (misskey-timeline--operation-current-p
+                  view state token operation))
+        (appkit-view-operation-finish operation)
         (misskey-timeline--handle-error
-         view state token "Misskey timeline request did not start")))
+         view state token "Misskey timeline request did not start"))
       request)))
 
 (defun misskey-timeline--capture-position (view)

@@ -33,7 +33,7 @@
   "Relationship kinds with labels, endpoints, and populated user fields.")
 
 (defconst misskey-directory--request-key 'relationships
-  "View request-table key for the active relationship request.")
+  "Operation key for the active relationship request.")
 
 (defvar-keymap misskey-directory-mode-map
   :doc "Keymap for `misskey-directory-mode'."
@@ -247,21 +247,21 @@
      (misskey-directory--project
       view (misskey-directory--state view)))))
 
-(defun misskey-directory--request-current-p (view state token)
+(defun misskey-directory--state-current-p (view state token)
   "Return non-nil when TOKEN may still update STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
        (eq token (plist-get state :request-token))))
 
-(defun misskey-directory--retire-request (view state token)
-  "Retire VIEW's transport when TOKEN still owns STATE."
-  (when (misskey-directory--request-current-p view state token)
-    (remhash misskey-directory--request-key
-             (appkit-view-request-table view))))
+(defun misskey-directory--operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may update STATE in VIEW."
+  (and (misskey-directory--state-current-p view state token)
+       (appkit-view-operation-current-p operation)))
 
 (defun misskey-directory--handle-error (view state token failure)
   "Install FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-directory--request-current-p view state token)
+  (when (misskey-directory--state-current-p view state token)
     (setf (plist-get state :request-token) nil
           (plist-get state :phase) 'error
           (plist-get state :message) failure)
@@ -270,7 +270,7 @@
 
 (defun misskey-directory--handle-success (view state token phase payload)
   "Install relationship PAYLOAD for PHASE when TOKEN owns VIEW and STATE."
-  (when (misskey-directory--request-current-p view state token)
+  (when (misskey-directory--state-current-p view state token)
     (condition-case err
         (let* ((relationships
                 (misskey-directory--validate-payload state payload))
@@ -306,13 +306,8 @@
 
 (defun misskey-directory--cancel-request (view state)
   "Cancel VIEW's active relationship request for STATE."
-  (let ((request (gethash misskey-directory--request-key
-                          (appkit-view-request-table view))))
-    (setf (plist-get state :request-token) nil)
-    (when request
-      (remhash misskey-directory--request-key
-               (appkit-view-request-table view))
-      (misskey-http-cancel request))))
+  (setf (plist-get state :request-token) nil)
+  (appkit-view-operation-cancel view misskey-directory--request-key))
 
 (defun misskey-directory--request (view phase)
   "Start relationship VIEW request for PHASE."
@@ -339,31 +334,41 @@
       (let ((token
              (list phase
                    (misskey-state-observe (appkit-view-app view))))
-            request callback-ran-p)
+            operation request)
         (setf (plist-get state :request-token) token
               (plist-get state :phase) phase
               (plist-get state :message) nil)
+        (setq operation
+              (appkit-view-operation-begin
+               view misskey-directory--request-key
+               :cancel-function #'misskey-http-cancel))
         (appkit-request-sync view :structure t :part 'directory)
         (setq request
               (misskey-http-read
                (misskey-directory--endpoint (plist-get state :kind))
                parameters
                (lambda (payload)
-                 (setq callback-ran-p t)
-                 (misskey-directory--retire-request view state token)
-                 (misskey-directory--handle-success
-                  view state token phase payload))
+                 (when (misskey-directory--operation-current-p
+                        view state token operation)
+                   (appkit-view-operation-finish operation)
+                   (misskey-directory--handle-success
+                    view state token phase payload)))
                :errback
                (lambda (failure)
-                 (setq callback-ran-p t)
-                 (misskey-directory--retire-request view state token)
-                 (misskey-directory--handle-error view state token failure))
+                 (when (misskey-directory--operation-current-p
+                        view state token operation)
+                   (appkit-view-operation-finish operation)
+                   (misskey-directory--handle-error
+                    view state token failure)))
                :account (plist-get state :account)
                :owner view))
-        (when (and request (not callback-ran-p)
-                   (misskey-directory--request-current-p view state token))
-          (puthash misskey-directory--request-key request
-                   (appkit-view-request-table view)))
+        (appkit-view-operation-bind operation request)
+        (when (and (null request)
+                   (misskey-directory--operation-current-p
+                    view state token operation))
+          (appkit-view-operation-finish operation)
+          (misskey-directory--handle-error
+           view state token "Misskey directory request did not start"))
         request))))
 
 (defun misskey-directory--setup-view (view)

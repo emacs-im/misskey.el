@@ -43,7 +43,7 @@
   "Profile note modes with labels and `users/notes' parameters.")
 
 (defconst misskey-profile--request-key 'profile-user
-  "View request-table key for the active profile lookup.")
+  "Operation key for the active profile lookup.")
 
 (defvar-keymap misskey-profile-mode-map
   :doc "Keymap for `misskey-profile-mode'."
@@ -224,21 +224,21 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
                       (caddr (misskey-profile--mode-spec mode)))))
     (plist-put parameters :userId (misskey-user-id user))))
 
-(defun misskey-profile--request-current-p (view state token)
+(defun misskey-profile--state-current-p (view state token)
   "Return non-nil when TOKEN may still update profile STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
        (eq token (plist-get state :profile-request-token))))
 
-(defun misskey-profile--retire-request (view state token)
-  "Retire VIEW's profile transport when TOKEN still owns STATE."
-  (when (misskey-profile--request-current-p view state token)
-    (remhash misskey-profile--request-key
-             (appkit-view-request-table view))))
+(defun misskey-profile--operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may update profile STATE in VIEW."
+  (and (misskey-profile--state-current-p view state token)
+       (appkit-view-operation-current-p operation)))
 
 (defun misskey-profile--handle-error (view state token failure)
   "Show profile FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-profile--request-current-p view state token)
+  (when (misskey-profile--state-current-p view state token)
     (setf (plist-get state :profile-request-token) nil
           (plist-get state :phase) 'error
           (plist-get state :message) failure)
@@ -247,7 +247,7 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 
 (defun misskey-profile--handle-user (view state token payload)
   "Install profile PAYLOAD when TOKEN still owns STATE in VIEW."
-  (when (misskey-profile--request-current-p view state token)
+  (when (misskey-profile--state-current-p view state token)
     (condition-case err
         (let ((user (misskey-profile--validate-user payload)))
           (misskey-merge-user-state
@@ -265,12 +265,8 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 
 (defun misskey-profile--cancel-user-request (view state)
   "Cancel VIEW's active user lookup for STATE."
-  (let ((request (gethash misskey-profile--request-key
-                          (appkit-view-request-table view))))
-    (setf (plist-get state :profile-request-token) nil)
-    (when request
-      (remhash misskey-profile--request-key (appkit-view-request-table view))
-      (misskey-http-cancel request))))
+  (setf (plist-get state :profile-request-token) nil)
+  (appkit-view-operation-cancel view misskey-profile--request-key))
 
 (defun misskey-profile--request-user (view)
   "Resolve and load VIEW's profile user."
@@ -280,29 +276,40 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
     (let ((token
            (list 'profile
                  (misskey-state-observe (appkit-view-app view))))
-          request callback-ran-p)
+          operation request)
       (setf (plist-get state :profile-request-token) token
             (plist-get state :phase) 'initial
             (plist-get state :message) nil)
+      (setq operation
+            (appkit-view-operation-begin
+             view misskey-profile--request-key
+             :cancel-function #'misskey-http-cancel))
       (appkit-request-sync view :part 'frame :position t)
       (setq request
             (misskey-http-read
              "users/show" (plist-get state :profile-reference)
              (lambda (payload)
-               (setq callback-ran-p t)
-               (misskey-profile--retire-request view state token)
-               (misskey-profile--handle-user view state token payload))
+               (when (misskey-profile--operation-current-p
+                      view state token operation)
+                 (appkit-view-operation-finish operation)
+                 (misskey-profile--handle-user
+                  view state token payload)))
              :errback
              (lambda (failure)
-               (setq callback-ran-p t)
-               (misskey-profile--retire-request view state token)
-               (misskey-profile--handle-error view state token failure))
+               (when (misskey-profile--operation-current-p
+                      view state token operation)
+                 (appkit-view-operation-finish operation)
+                 (misskey-profile--handle-error
+                  view state token failure)))
              :account (plist-get state :account)
              :owner view))
-      (when (and request (not callback-ran-p)
-                 (misskey-profile--request-current-p view state token))
-        (puthash misskey-profile--request-key request
-                 (appkit-view-request-table view)))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (misskey-profile--operation-current-p
+                  view state token operation))
+        (appkit-view-operation-finish operation)
+        (misskey-profile--handle-error
+         view state token "Misskey profile request did not start"))
       request)))
 
 (defun misskey-profile--setup-view (view)

@@ -25,7 +25,7 @@
 (require 'misskey-render)
 
 (defconst misskey-feed--request-key 'notes
-  "View request-table key for a paged note feed request.")
+  "Operation key for a paged note feed request.")
 
 (cl-defun misskey-feed-make-state
     (&key type account title endpoint parameters (limit 20)
@@ -196,21 +196,21 @@ replaces the default empty result text."
           (puthash id t seen)
           (push note result))))))
 
-(defun misskey-feed--request-current-p (view state token)
+(defun misskey-feed--state-current-p (view state token)
   "Return non-nil when TOKEN may still update STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
        (eq token (plist-get state :request-token))))
 
-(defun misskey-feed--retire-request (view state token)
-  "Retire VIEW's transport when TOKEN still owns STATE."
-  (when (misskey-feed--request-current-p view state token)
-    (remhash misskey-feed--request-key
-             (appkit-view-request-table view))))
+(defun misskey-feed--operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may update STATE in VIEW."
+  (and (misskey-feed--state-current-p view state token)
+       (appkit-view-operation-current-p operation)))
 
 (defun misskey-feed--handle-error (view state token failure)
   "Show FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-feed--request-current-p view state token)
+  (when (misskey-feed--state-current-p view state token)
     (setf (plist-get state :phase) 'error
           (plist-get state :message) failure
           (plist-get state :request-token) nil)
@@ -219,7 +219,7 @@ replaces the default empty result text."
 
 (defun misskey-feed--handle-success (view state token phase payload)
   "Install PAYLOAD when TOKEN still owns STATE in VIEW for PHASE."
-  (when (misskey-feed--request-current-p view state token)
+  (when (misskey-feed--state-current-p view state token)
     (condition-case err
         (let* ((notes (misskey-note-validate-list payload))
                (current (plist-get state :items))
@@ -267,16 +267,12 @@ replaces the default empty result text."
 
 (defun misskey-feed-cancel-request (view)
   "Cancel VIEW's active feed transport, if any."
-  (let* ((state (misskey-feed-view-state view))
-         (request (gethash misskey-feed--request-key
-                           (appkit-view-request-table view))))
+  (let ((state (misskey-feed-view-state view)))
     (when (plist-get state :request-token)
       (setf (plist-get state :request-token) nil
             (plist-get state :phase)
             (if (plist-get state :loaded-p) 'ready 'initial)))
-    (when request
-      (remhash misskey-feed--request-key (appkit-view-request-table view))
-      (misskey-http-cancel request))))
+    (appkit-view-operation-cancel view misskey-feed--request-key)))
 
 (defun misskey-feed--request-parameters (state phase)
   "Return API parameters for STATE request PHASE."
@@ -310,32 +306,40 @@ PHASE is `initial', `refresh', or `older'."
            (token
             (list phase
                   (misskey-state-observe (appkit-view-app view))))
-           request
-           callback-ran-p)
+           operation request)
       (misskey-feed-cancel-request view)
       (setf (plist-get state :request-token) token
             (plist-get state :phase) phase
             (plist-get state :message) nil)
+      (setq operation
+            (appkit-view-operation-begin
+             view misskey-feed--request-key
+             :cancel-function #'misskey-http-cancel))
       (appkit-request-sync view :part 'frame :position t)
       (setq request
             (misskey-http-read
              endpoint parameters
              (lambda (payload)
-               (setq callback-ran-p t)
-               (misskey-feed--retire-request view state token)
-               (misskey-feed--handle-success
-                view state token phase payload))
+               (when (misskey-feed--operation-current-p
+                      view state token operation)
+                 (appkit-view-operation-finish operation)
+                 (misskey-feed--handle-success
+                  view state token phase payload)))
              :errback
              (lambda (failure)
-               (setq callback-ran-p t)
-               (misskey-feed--retire-request view state token)
-               (misskey-feed--handle-error view state token failure))
+               (when (misskey-feed--operation-current-p
+                      view state token operation)
+                 (appkit-view-operation-finish operation)
+                 (misskey-feed--handle-error view state token failure)))
              :account (plist-get state :account)
              :owner view))
-      (when (and request (not callback-ran-p)
-                 (misskey-feed--request-current-p view state token))
-        (puthash misskey-feed--request-key request
-                 (appkit-view-request-table view)))
+      (appkit-view-operation-bind operation request)
+      (when (and (null request)
+                 (misskey-feed--operation-current-p
+                  view state token operation))
+        (appkit-view-operation-finish operation)
+        (misskey-feed--handle-error
+         view state token "Misskey feed request did not start"))
       request)))
 
 (defun misskey-feed-reset-query (view endpoint parameters &optional title)

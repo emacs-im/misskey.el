@@ -166,8 +166,8 @@
             (should-not (plist-get state :ancestors))
             (should-not (plist-get state :replies))
             (should-not
-             (gethash misskey-thread--request-key
-                      (appkit-view-request-table view)))))
+             (appkit-view-operation-cancel
+              view misskey-thread--request-key))))
       (misskey-thread-test--cleanup view))))
 
 (ert-deftest misskey-thread-older-requires-existing-reply-cursor ()

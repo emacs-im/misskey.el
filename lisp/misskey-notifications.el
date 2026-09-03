@@ -31,10 +31,10 @@
   :group 'misskey)
 
 (defconst misskey-notifications--request-key 'notifications
-  "View request-table key for the active notification read.")
+  "Operation key for the active notification read.")
 
 (defconst misskey-notifications--mark-key 'notifications-mark-read
-  "View request-table key for the explicit read mutation.")
+  "Operation key for the explicit read mutation.")
 
 (defconst misskey-notifications--type-labels
   '(("follow" . "Followed you")
@@ -269,31 +269,32 @@
      (misskey-notifications--project
       (misskey-notifications--state view)))))
 
-(defun misskey-notifications--request-current-p (view state token)
-  "Return non-nil when TOKEN may still update STATE in VIEW."
+(defun misskey-notifications--read-current-p (view state token)
+  "Return non-nil when TOKEN may still update read STATE in VIEW."
   (and (appkit-view-live-p view)
        (eq state (appkit-view-state view))
        (eq token (plist-get state :request-token))))
 
-(defun misskey-notifications--retire-request (view state _token key)
-  "Retire VIEW request KEY when it still belongs to STATE."
-  (when (and (appkit-view-live-p view)
-             (eq state (appkit-view-state view)))
-    (remhash key (appkit-view-request-table view))))
+(defun misskey-notifications--read-operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may update read STATE in VIEW."
+  (and (misskey-notifications--read-current-p view state token)
+       (appkit-view-operation-current-p operation)))
 
-(defun misskey-notifications--handle-read-error (view state token failure)
+(defun misskey-notifications--handle-read-error
+    (view state token failure)
   "Install read FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-notifications--request-current-p view state token)
+  (when (misskey-notifications--read-current-p view state token)
     (setf (plist-get state :request-token) nil
           (plist-get state :phase) 'error
           (plist-get state :message) failure)
-    (appkit-request-sync view :structure t :part 'directory))
-  (message "%s" failure))
+    (appkit-request-sync view :structure t :part 'directory)
+    (message "%s" failure)))
 
 (defun misskey-notifications--handle-read-success
     (view state token phase payload)
   "Install notification PAYLOAD for PHASE when TOKEN owns VIEW and STATE."
-  (when (misskey-notifications--request-current-p view state token)
+  (when (misskey-notifications--read-current-p view state token)
     (condition-case err
         (let* ((notifications
                 (misskey-notifications--validate-list payload))
@@ -341,12 +342,9 @@
         view state token (error-message-string err))))))
 
 (defun misskey-notifications--cancel-request (view state key token-key)
-  "Cancel VIEW request at KEY and clear STATE TOKEN-KEY."
-  (let ((request (gethash key (appkit-view-request-table view))))
-    (setf (plist-get state token-key) nil)
-    (when request
-      (remhash key (appkit-view-request-table view))
-      (misskey-http-cancel request))))
+  "Cancel VIEW operation at KEY and clear STATE TOKEN-KEY."
+  (setf (plist-get state token-key) nil)
+  (appkit-view-operation-cancel view key))
 
 (defun misskey-notifications--request (view phase)
   "Start notification VIEW read for PHASE without marking it read."
@@ -372,33 +370,40 @@
       (let ((token
              (list phase
                    (misskey-state-observe (appkit-view-app view))))
-            request callback-ran-p)
+            operation request)
         (setf (plist-get state :request-token) token
               (plist-get state :phase) phase
               (plist-get state :message) nil)
+        (setq operation
+              (appkit-view-operation-begin
+               view misskey-notifications--request-key
+               :cancel-function #'misskey-http-cancel))
         (appkit-request-sync view :structure t :part 'directory)
         (setq request
               (misskey-http-read
                "i/notifications" parameters
                (lambda (payload)
-                 (setq callback-ran-p t)
-                 (misskey-notifications--retire-request
-                  view state token misskey-notifications--request-key)
-                 (misskey-notifications--handle-read-success
-                  view state token phase payload))
+                 (when (misskey-notifications--read-operation-current-p
+                        view state token operation)
+                   (appkit-view-operation-finish operation)
+                   (misskey-notifications--handle-read-success
+                    view state token phase payload)))
                :errback
                (lambda (failure)
-                 (setq callback-ran-p t)
-                 (misskey-notifications--retire-request
-                  view state token misskey-notifications--request-key)
-                 (misskey-notifications--handle-read-error
-                  view state token failure))
+                 (when (misskey-notifications--read-operation-current-p
+                        view state token operation)
+                   (appkit-view-operation-finish operation)
+                   (misskey-notifications--handle-read-error
+                    view state token failure)))
                :account (plist-get state :account)
                :owner view))
-        (when (and request (not callback-ran-p)
-                   (misskey-notifications--request-current-p view state token))
-          (puthash misskey-notifications--request-key request
-                   (appkit-view-request-table view)))
+        (appkit-view-operation-bind operation request)
+        (when (and (null request)
+                   (misskey-notifications--read-operation-current-p
+                    view state token operation))
+          (appkit-view-operation-finish operation)
+          (misskey-notifications--handle-read-error
+           view state token "Misskey notification request did not start"))
         request))))
 
 (defun misskey-notifications--mark-current-p (view state token)
@@ -407,6 +412,12 @@
        (eq state (appkit-view-state view))
        (eq token (plist-get state :mark-token))))
 
+(defun misskey-notifications--mark-operation-current-p
+    (view state token operation)
+  "Return non-nil when TOKEN and OPERATION may mark STATE in VIEW."
+  (and (misskey-notifications--mark-current-p view state token)
+       (appkit-view-operation-current-p operation)))
+
 (defun misskey-notifications--handle-mark-success (view state token ids)
   "Acknowledge snapshot IDS when TOKEN still owns STATE in VIEW."
   (when (misskey-notifications--mark-current-p view state token)
@@ -414,15 +425,15 @@
       (dolist (id ids)
         (puthash id t acknowledged)))
     (setf (plist-get state :mark-token) nil)
-    (appkit-request-sync view :structure t :part 'directory))
-  (message "Marked all Misskey notifications read"))
+    (appkit-request-sync view :structure t :part 'directory)
+    (message "Marked all Misskey notifications read")))
 
 (defun misskey-notifications--handle-mark-error (view state token failure)
   "Retire failed mark TOKEN for STATE in VIEW and report FAILURE."
   (when (misskey-notifications--mark-current-p view state token)
     (setf (plist-get state :mark-token) nil)
-    (appkit-request-sync view :structure t :part 'directory))
-  (message "%s" failure))
+    (appkit-request-sync view :structure t :part 'directory)
+    (message "%s" failure)))
 
 (defun misskey-notifications-mark-all-read ()
   "Explicitly mark all account notifications read."
@@ -435,32 +446,39 @@
                (ids (mapcar (lambda (notification)
                               (alist-get 'id notification))
                             (plist-get state :items)))
-               request callback-ran-p)
+               operation request)
           (setf (plist-get state :mark-token) token)
+          (setq operation
+                (appkit-view-operation-begin
+                 view misskey-notifications--mark-key
+                 :cancel-function #'misskey-http-cancel))
           (appkit-request-sync view :structure t :part 'directory)
           (setq request
                 (misskey-http-post
                  "notifications/mark-all-as-read" (make-hash-table)
                  (lambda (_payload)
-                   (setq callback-ran-p t)
-                   (misskey-notifications--retire-request
-                    view state token misskey-notifications--mark-key)
-                   (misskey-notifications--handle-mark-success
-                    view state token ids))
+                   (when (misskey-notifications--mark-operation-current-p
+                          view state token operation)
+                     (appkit-view-operation-finish operation)
+                     (misskey-notifications--handle-mark-success
+                      view state token ids)))
                  :errback
                  (lambda (failure)
-                   (setq callback-ran-p t)
-                   (misskey-notifications--retire-request
-                    view state token misskey-notifications--mark-key)
-                   (misskey-notifications--handle-mark-error
-                    view state token failure))
+                   (when (misskey-notifications--mark-operation-current-p
+                          view state token operation)
+                     (appkit-view-operation-finish operation)
+                     (misskey-notifications--handle-mark-error
+                      view state token failure)))
                  :account (plist-get state :account)
                  :owner view))
-          (when (and request (not callback-ran-p)
-                     (misskey-notifications--mark-current-p
-                      view state token))
-            (puthash misskey-notifications--mark-key request
-                     (appkit-view-request-table view)))
+          (appkit-view-operation-bind operation request)
+          (when (and (null request)
+                     (misskey-notifications--mark-operation-current-p
+                      view state token operation))
+            (appkit-view-operation-finish operation)
+            (misskey-notifications--handle-mark-error
+             view state token
+             "Misskey notification mark request did not start"))
           request))
     (user-error "Current buffer is not a Misskey notification view")))
 

@@ -161,10 +161,9 @@
                  (token (plist-get state :request-token)))
             (should-error (misskey-feed-load-more view) :type 'user-error)
             (should (eq token (plist-get state :request-token)))
-            (should (eq request
-                        (gethash misskey-feed--request-key
-                                 (appkit-view-request-table view))))
-            (should-not cancelled)))
+            (should-not cancelled)
+            (appkit-view-operation-cancel view misskey-feed--request-key)
+            (should (eq cancelled request))))
       (when (appkit-view-p view)
         (appkit-kill-view view t))
       (misskey-stop))))
