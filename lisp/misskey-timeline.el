@@ -74,7 +74,7 @@
         :items nil
         :phase 'initial
         :message nil
-        :request-token nil
+        :loading-p nil
         :loaded-p nil
         :position nil
         :older-exhausted-p nil
@@ -281,92 +281,76 @@
           (puthash id t seen)
           (push note result))))))
 
-(defun misskey-timeline--state-current-p (view state token)
-  "Return non-nil when TOKEN may still update STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :request-token))))
-
-(defun misskey-timeline--operation-current-p
-    (view state token operation)
-  "Return non-nil when TOKEN and OPERATION may update STATE in VIEW."
-  (and (misskey-timeline--state-current-p view state token)
-       (appkit-view-operation-current-p operation)))
-
-(defun misskey-timeline--handle-error (view state token failure)
-  "Show FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-timeline--state-current-p view state token)
-    (setf (plist-get state :phase) 'error
-          (plist-get state :message) failure
-          (plist-get state :request-token) nil)
-    (appkit-request-sync view :part 'frame :position t)
-    (message "%s" failure)))
+(defun misskey-timeline--handle-error (view state failure)
+  "Install timeline FAILURE in VIEW STATE."
+  (setf (plist-get state :phase) 'error
+        (plist-get state :message) failure
+        (plist-get state :loading-p) nil)
+  (appkit-request-sync view :part 'frame :position t)
+  (message "%s" failure))
 
 (defun misskey-timeline--handle-success
-    (view state token phase payload)
-  "Install PAYLOAD when TOKEN still owns STATE in VIEW for request PHASE."
-  (when (misskey-timeline--state-current-p view state token)
-    (condition-case err
-        (let* ((notes (misskey-note-validate-list payload))
-               (current (plist-get state :items))
-               (new-notes
-                (if (eq phase 'older)
-                    (misskey-timeline--new-notes current notes)
-                  notes))
-               (installed
-                (pcase phase
-                  ('initial notes)
-                  ('refresh
-                   (append notes
-                           (misskey-timeline--new-notes notes current)))
-                  ('older (append current new-notes))
-                  (_
-                   (error
-                    "Invalid Misskey timeline request phase: %S" phase)))))
-          (dolist (note notes)
-            (misskey-merge-note-state
-             (appkit-view-app view) note (nth 1 token)))
-          (unless (eq phase 'older)
-            (clrhash (plist-get state :revealed-content)))
-          (setf (plist-get state :items) installed
-                (plist-get state :phase) 'ready
-                (plist-get state :message) nil
-                (plist-get state :request-token) nil
-                (plist-get state :loaded-p) t)
-          (pcase phase
-            ('initial
-             (setf (plist-get state :older-exhausted-p) (null notes)))
-            ('older
-             (setf (plist-get state :older-exhausted-p)
-                   (null new-notes))))
-          (appkit-view-enqueue-event
-           view (list :position (if (eq phase 'initial)
-                                    'first
-                                  'preserve)))
-          (appkit-request-sync
-           view :structure t :part 'frame :position t)
-          (misskey-media-prefetch-notes view new-notes)
-          (if (eq phase 'older)
-              (if new-notes
-                  (message "Loaded %d older Misskey notes"
-                           (length new-notes))
-                (message "No older Misskey notes"))
-            (message "Loaded %d Misskey notes" (length notes))))
-      (error
-       (misskey-timeline--handle-error
-        view state token (error-message-string err))))))
+    (view state observation phase payload)
+  "Install PAYLOAD in VIEW STATE for request PHASE.
+
+OBSERVATION versions canonical note merges."
+  (condition-case err
+      (let* ((notes (misskey-note-validate-list payload))
+             (current (plist-get state :items))
+             (new-notes
+              (if (eq phase 'older)
+                  (misskey-timeline--new-notes current notes)
+                notes))
+             (installed
+              (pcase phase
+                ('initial notes)
+                ('refresh
+                 (append notes
+                         (misskey-timeline--new-notes notes current)))
+                ('older (append current new-notes))
+                (_
+                 (error
+                  "Invalid Misskey timeline request phase: %S" phase)))))
+        (dolist (note notes)
+          (misskey-merge-note-state
+           (appkit-view-app view) note observation))
+        (unless (eq phase 'older)
+          (clrhash (plist-get state :revealed-content)))
+        (setf (plist-get state :items) installed
+              (plist-get state :phase) 'ready
+              (plist-get state :message) nil
+              (plist-get state :loading-p) nil
+              (plist-get state :loaded-p) t)
+        (pcase phase
+          ('initial
+           (setf (plist-get state :older-exhausted-p) (null notes)))
+          ('older
+           (setf (plist-get state :older-exhausted-p)
+                 (null new-notes))))
+        (appkit-view-enqueue-event
+         view (list :position (if (eq phase 'initial)
+                                  'first
+                                'preserve)))
+        (appkit-request-sync
+         view :structure t :part 'frame :position t)
+        (misskey-media-prefetch-notes view new-notes)
+        (if (eq phase 'older)
+            (if new-notes
+                (message "Loaded %d older Misskey notes"
+                         (length new-notes))
+              (message "No older Misskey notes"))
+          (message "Loaded %d Misskey notes" (length notes))))
+    (error
+     (misskey-timeline--handle-error
+      view state (error-message-string err)))))
 
 (defun misskey-timeline--interrupt-state-request (state)
-  "Retire STATE's request token and restore its settled phase."
-  (when (plist-get state :request-token)
-    (setf (plist-get state :request-token) nil
+  "Retire STATE's loading marker and restore its settled phase."
+  (when (plist-get state :loading-p)
+    (setf (plist-get state :loading-p) nil
           (plist-get state :phase)
           (if (plist-get state :loaded-p) 'ready 'initial)
           (plist-get state :message) nil)))
-
-(defun misskey-timeline--cancel-request (view)
-  "Cancel VIEW's active timeline transport, if any."
-  (appkit-view-operation-cancel view misskey-timeline--request-key))
 
 (defun misskey-timeline--request (view phase)
   "Start one timeline PHASE request owned by VIEW."
@@ -377,63 +361,43 @@
     (unless (and (integerp misskey-timeline-limit)
                  (<= 1 misskey-timeline-limit 100))
       (user-error "Misskey timeline limit must be between 1 and 100"))
-    (when (plist-get state :request-token)
+    (when (plist-get state :loading-p)
       (user-error "The Misskey timeline is already loading"))
     (when (eq phase 'older)
       (unless items
         (user-error "The Misskey timeline has no notes"))
       (when (plist-get state :older-exhausted-p)
         (user-error "No older Misskey notes available")))
-    (let* ((token
-            (list phase
-                  (misskey-state-observe (appkit-view-app view))))
+    (let* ((observation (misskey-state-observe (appkit-view-app view)))
            (account (plist-get state :account))
            (kind (plist-get state :kind))
            (until-id
             (and (eq phase 'older)
                  (misskey-note-id (car (last items)))))
-           operation
-           request)
+           (operation
+            (appkit-view-operation-begin
+             view misskey-timeline--request-key)))
       (unless (or (not (eq phase 'older)) until-id)
         (error "Misskey timeline has no older-page cursor"))
-      (setf (plist-get state :request-token) token
+      (setf (plist-get state :loading-p) t
             (plist-get state :phase) phase
             (plist-get state :message) nil)
-      (setq operation
-            (appkit-view-operation-begin
-             view misskey-timeline--request-key
-             :cancel-function #'misskey-http-cancel))
       (appkit-request-sync view :part 'frame :position t)
-      (setq
-       request
-       (misskey-http-read
-        (misskey-timeline--endpoint kind)
-        (append
-         (list :limit misskey-timeline-limit :allowPartial t)
-         (and until-id (list :untilId until-id)))
-        (lambda (payload)
-          (when (misskey-timeline--operation-current-p
-                 view state token operation)
-            (appkit-view-operation-finish operation)
-            (misskey-timeline--handle-success
-             view state token phase payload)))
-        :errback
-        (lambda (failure)
-          (when (misskey-timeline--operation-current-p
-                 view state token operation)
-            (appkit-view-operation-finish operation)
-            (misskey-timeline--handle-error
-             view state token failure)))
-        :owner view
-        :account account))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (misskey-timeline--operation-current-p
-                  view state token operation))
-        (appkit-view-operation-finish operation)
-        (misskey-timeline--handle-error
-         view state token "Misskey timeline request did not start"))
-      request)))
+      (misskey-http-read
+       (misskey-timeline--endpoint kind)
+       (append
+        (list :limit misskey-timeline-limit :allowPartial t)
+        (and until-id (list :untilId until-id)))
+       (lambda (payload)
+         (when (appkit-view-operation-finish operation)
+           (misskey-timeline--handle-success
+            view state observation phase payload)))
+       :errback
+       (lambda (failure)
+         (when (appkit-view-operation-finish operation)
+           (misskey-timeline--handle-error view state failure)))
+       :owner operation
+       :account account))))
 
 (defun misskey-timeline--capture-position (view)
   "Return VIEW's semantic position snapshot."
@@ -455,10 +419,8 @@ When REFRESH-P is non-nil, refresh KIND after switching."
       (when (plist-get state :items)
         (setf (plist-get state :position)
               (misskey-timeline--capture-position view)))
-      ;; Revoke the token before cancellation synchronously delivers its
-      ;; errback at the transport boundary.
       (misskey-timeline--interrupt-state-request state)
-      (misskey-timeline--cancel-request view)
+      (appkit-view-operation-cancel view misskey-timeline--request-key)
       (misskey-timeline--interrupt-state-request target)
       (setf (appkit-view-state view) target
             (appkit-view-pending-events view) nil)
@@ -468,7 +430,7 @@ When REFRESH-P is non-nil, refresh KIND after switching."
        view :structure t :part 'frame :position t)
       (force-mode-line-update))
     (let ((active (misskey-timeline--view-state view)))
-      (unless (plist-get active :request-token)
+      (unless (plist-get active :loading-p)
         (when (or refresh-p (not (plist-get active :loaded-p)))
           (misskey-timeline--request
            view

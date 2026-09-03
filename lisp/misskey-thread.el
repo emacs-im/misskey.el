@@ -185,88 +185,46 @@
   (appkit-invalidate view :structure t :part 'frame :position t)
   (appkit-sync-invalidations view))
 
-(defun misskey-thread--state-current-p (view state token)
-  "Return non-nil when TOKEN still owns STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :request-token))))
-
-(defun misskey-thread--stage-current-p
-    (view state token stage operation)
-  "Return non-nil when TOKEN, STAGE, and OPERATION own STATE in VIEW."
-  (and (misskey-thread--state-current-p view state token)
-       (eq stage (plist-get state :stage-token))
-       (appkit-view-operation-current-p operation)))
 
 (defun misskey-thread--cancel (view)
-  "Cancel VIEW's active thread transport."
+  "Cancel VIEW's active thread operation."
   (let ((state (misskey-thread--state view)))
-    (setf (plist-get state :request-token) nil
-          (plist-get state :stage-token) nil)
+    (setf (plist-get state :loading-p) nil)
     (appkit-view-operation-cancel view misskey-thread--request-key)))
 
-(defun misskey-thread--fail (view state token message)
-  "Settle VIEW STATE TOKEN with failure MESSAGE."
-  (when (misskey-thread--state-current-p view state token)
-    (setf (plist-get state :request-token) nil
-          (plist-get state :stage-token) nil
-          (plist-get state :phase) 'error
-          (plist-get state :message) message)
-    (appkit-request-sync view :part 'frame :position t)
-    (message "%s" message)))
+(defun misskey-thread--fail (view state message)
+  "Install thread failure MESSAGE in VIEW STATE."
+  (setf (plist-get state :loading-p) nil
+        (plist-get state :phase) 'error
+        (plist-get state :message) message)
+  (appkit-request-sync view :part 'frame :position t)
+  (message "%s" message))
 
-(defun misskey-thread--read (view state token endpoint parameters success)
-  "Read ENDPOINT with PARAMETERS for VIEW STATE TOKEN, then call SUCCESS."
-  (let ((stage (cons endpoint nil))
-        (observation (misskey-state-observe (appkit-view-app view)))
-        operation request)
-    (setf (plist-get state :stage-token) stage)
+(defun misskey-thread--read
+    (view state operation endpoint parameters success)
+  "Read ENDPOINT with PARAMETERS for VIEW STATE OPERATION, then call SUCCESS."
+  (let ((observation (misskey-state-observe (appkit-view-app view))))
     (condition-case err
-        (progn
-          (setq operation
-                (appkit-view-operation-begin
-                 view misskey-thread--request-key
-                 :cancel-function #'misskey-http-cancel))
-          (setq request
-                (misskey-http-read
-                 endpoint parameters
-                 (lambda (payload)
-                   (when (misskey-thread--stage-current-p
-                          view state token stage operation)
-                     (appkit-view-operation-finish operation)
-                     (setf (plist-get state :stage-token) nil)
-                     (condition-case handler-error
-                         (funcall success payload observation)
-                       (error
-                        (misskey-thread--fail
-                         view state token
-                         (error-message-string handler-error))))))
-                 :errback
-                 (lambda (failure)
-                   (when (misskey-thread--stage-current-p
-                          view state token stage operation)
-                     (appkit-view-operation-finish operation)
-                     (setf (plist-get state :stage-token) nil)
-                     (misskey-thread--fail view state token failure)))
-                 :owner view
-                 :account (plist-get state :account)))
-          (appkit-view-operation-bind operation request)
-          (when (and (null request)
-                     (misskey-thread--stage-current-p
-                      view state token stage operation))
-            (appkit-view-operation-finish operation)
-            (setf (plist-get state :stage-token) nil)
-            (misskey-thread--fail
-             view state token "Misskey thread request did not start")))
+        (misskey-http-read
+         endpoint parameters
+         (lambda (payload)
+           (when (appkit-view-operation-current-p operation)
+             (condition-case handler-error
+                 (funcall success payload observation)
+               (error
+                (when (appkit-view-operation-finish operation)
+                  (misskey-thread--fail
+                   view state (error-message-string handler-error)))))))
+         :errback
+         (lambda (failure)
+           (when (appkit-view-operation-finish operation)
+             (misskey-thread--fail view state failure)))
+         :owner operation
+         :account (plist-get state :account))
       (error
-       (when (and (misskey-thread--state-current-p view state token)
-                  (eq stage (plist-get state :stage-token)))
-         (when (appkit-view-operation-current-p operation)
-           (appkit-view-operation-finish operation))
-         (setf (plist-get state :stage-token) nil)
+       (when (appkit-view-operation-finish operation)
          (misskey-thread--fail
-          view state token (error-message-string err)))))
-    request))
+          view state (error-message-string err)))))))
 
 (defun misskey-thread--ancestor-chain (focus candidates)
   "Return FOCUS's oldest-first ancestor chain from CANDIDATES."
@@ -295,11 +253,11 @@
     chain))
 
 (defun misskey-thread--finish
-    (view state token phase replies &optional focus ancestors)
-  "Atomically install REPLIES for VIEW STATE TOKEN and PHASE.
+    (view state operation phase replies &optional focus ancestors)
+  "Install REPLIES for VIEW STATE OPERATION and PHASE.
 
 FOCUS and ANCESTORS hold the staged initial thread context."
-  (when (misskey-thread--state-current-p view state token)
+  (when (appkit-view-operation-finish operation)
     (let* ((loaded-p (plist-get state :loaded-p))
            (new
             (if (eq phase 'older)
@@ -318,8 +276,7 @@ FOCUS and ANCESTORS hold the staged initial thread context."
         (setf (plist-get state :replies)
               (append (plist-get state :replies) new)))
       (setf (plist-get state :replies-exhausted-p) (null new)
-            (plist-get state :request-token) nil
-            (plist-get state :stage-token) nil
+            (plist-get state :loading-p) nil
             (plist-get state :phase) 'ready
             (plist-get state :message) nil
             (plist-get state :loaded-p) t)
@@ -332,15 +289,15 @@ FOCUS and ANCESTORS hold the staged initial thread context."
       (misskey-media-prefetch-notes view (misskey-thread--items state)))))
 
 (defun misskey-thread--load-replies
-    (view state token phase &optional focus ancestors until-id)
-  "Load reply PHASE for VIEW STATE TOKEN, staging FOCUS and ANCESTORS.
+    (view state operation phase &optional focus ancestors until-id)
+  "Load reply PHASE for VIEW STATE OPERATION, staging FOCUS and ANCESTORS.
 
 UNTIL-ID is the required cursor for an older page."
   (when (and (eq phase 'older)
              (not (and (stringp until-id) (not (string-empty-p until-id)))))
     (error "The Misskey thread has no valid reply cursor"))
   (misskey-thread--read
-   view state token "notes/replies"
+   view state operation "notes/replies"
    (append (list :noteId (plist-get state :focus-id)
                  :limit misskey-thread-reply-limit)
            (and until-id (list :untilId until-id)))
@@ -350,12 +307,12 @@ UNTIL-ID is the required cursor for an older page."
          (misskey-merge-note-state
           (appkit-view-app view) note observation))
        (misskey-thread--finish
-        view state token phase replies focus ancestors)))))
+        view state operation phase replies focus ancestors)))))
 
-(defun misskey-thread--load-initial (view state token)
-  "Load the initial focused thread for VIEW STATE TOKEN."
+(defun misskey-thread--load-initial (view state operation)
+  "Load the initial focused thread for VIEW STATE OPERATION."
   (misskey-thread--read
-   view state token "notes/show"
+   view state operation "notes/show"
    (list :noteId (plist-get state :focus-id))
    (lambda (payload observation)
      (let ((focus (misskey-note-validate payload)))
@@ -364,7 +321,7 @@ UNTIL-ID is the required cursor for an older page."
        (misskey-merge-note-state
         (appkit-view-app view) focus observation)
        (misskey-thread--read
-        view state token "notes/conversation"
+        view state operation "notes/conversation"
         (list :noteId (plist-get state :focus-id) :limit 100)
         (lambda (conversation conversation-observation)
           (let* ((candidates (misskey-note-validate-list conversation))
@@ -374,7 +331,7 @@ UNTIL-ID is the required cursor for an older page."
               (misskey-merge-note-state
                (appkit-view-app view) note conversation-observation))
             (misskey-thread--load-replies
-             view state token 'initial focus ancestors))))))))
+             view state operation 'initial focus ancestors))))))))
 
 (defun misskey-thread--request (view phase)
   "Start VIEW thread request PHASE."
@@ -384,7 +341,7 @@ UNTIL-ID is the required cursor for an older page."
                (<= 1 misskey-thread-reply-limit 100))
     (user-error "Misskey thread reply limit must be between 1 and 100"))
   (let ((state (misskey-thread--state view)))
-    (when (plist-get state :request-token)
+    (when (plist-get state :loading-p)
       (user-error "The Misskey thread is already loading"))
     (when (and (eq phase 'older)
                (plist-get state :replies-exhausted-p))
@@ -397,15 +354,17 @@ UNTIL-ID is the required cursor for an older page."
           (user-error "The Misskey thread has no replies to page"))
         (unless (and (stringp cursor) (not (string-empty-p cursor)))
           (user-error "The Misskey thread has no valid reply cursor")))
-      (let ((token (cons phase nil)))
-        (setf (plist-get state :request-token) token
+      (let ((operation
+             (appkit-view-operation-begin
+              view misskey-thread--request-key)))
+        (setf (plist-get state :loading-p) t
               (plist-get state :phase) (if (eq phase 'older) 'older 'loading)
               (plist-get state :message) nil)
         (appkit-request-sync view :part 'frame :position t)
         (if (eq phase 'initial)
-            (misskey-thread--load-initial view state token)
+            (misskey-thread--load-initial view state operation)
           (misskey-thread--load-replies
-           view state token phase nil nil cursor))))))
+           view state operation phase nil nil cursor))))))
 
 (defun misskey-thread-refresh ()
   "Refresh the current Misskey thread."
@@ -435,8 +394,8 @@ ACCOUNT defaults to the account selected by current customization."
          (app (misskey-app account))
          (state (list :type 'thread :account account :focus-id note-id
                       :ancestors nil :focus nil :replies nil
-                      :phase 'loading :message nil :request-token nil
-                      :stage-token nil :loaded-p nil
+                      :phase 'loading :message nil :loading-p nil
+                      :loaded-p nil
                       :replies-exhausted-p nil
                       :revealed-content (make-hash-table :test #'equal)))
          (view
@@ -448,7 +407,7 @@ ACCOUNT defaults to the account selected by current customization."
            :parts '(frame entries)
            :position-policy appkit-discussion-key-property
            :setup #'misskey-thread--setup-view :select t)))
-    (unless (plist-get (misskey-thread--state view) :request-token)
+    (unless (plist-get (misskey-thread--state view) :loading-p)
       (misskey-thread--request view 'initial))
     view))
 

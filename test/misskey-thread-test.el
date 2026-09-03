@@ -160,8 +160,7 @@
             (funcall (cdr (assoc "notes/replies" callbacks))
                      '(((text . "missing identity"))))
             (should (eq (plist-get state :phase) 'error))
-            (should-not (plist-get state :request-token))
-            (should-not (plist-get state :stage-token))
+            (should-not (plist-get state :loading-p))
             (should-not (plist-get state :focus))
             (should-not (plist-get state :ancestors))
             (should-not (plist-get state :replies))
@@ -195,7 +194,10 @@
           (with-current-buffer (appkit-view-buffer view)
             (should-error (misskey-thread-load-more) :type 'user-error))
           (should (= reads 3))
-          (should-not (plist-get (appkit-view-state view) :request-token)))
+          (should-not (plist-get (appkit-view-state view) :loading-p))
+          (should-not
+           (appkit-view-operation-cancel
+            view misskey-thread--request-key)))
       (misskey-thread-test--cleanup view))))
 
 (provide 'misskey-thread-test)

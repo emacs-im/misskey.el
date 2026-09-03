@@ -247,67 +247,49 @@
      (misskey-directory--project
       view (misskey-directory--state view)))))
 
-(defun misskey-directory--state-current-p (view state token)
-  "Return non-nil when TOKEN may still update STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :request-token))))
+(defun misskey-directory--handle-error (view state failure)
+  "Install relationship FAILURE in VIEW STATE."
+  (setf (plist-get state :phase) 'error
+        (plist-get state :message) failure)
+  (appkit-request-sync view :structure t :part 'directory)
+  (message "%s" failure))
 
-(defun misskey-directory--operation-current-p
-    (view state token operation)
-  "Return non-nil when TOKEN and OPERATION may update STATE in VIEW."
-  (and (misskey-directory--state-current-p view state token)
-       (appkit-view-operation-current-p operation)))
+(defun misskey-directory--handle-success
+    (view state observation phase payload)
+  "Install relationship PAYLOAD for PHASE in VIEW STATE.
 
-(defun misskey-directory--handle-error (view state token failure)
-  "Install FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-directory--state-current-p view state token)
-    (setf (plist-get state :request-token) nil
-          (plist-get state :phase) 'error
-          (plist-get state :message) failure)
-    (appkit-request-sync view :structure t :part 'directory)
-    (message "%s" failure)))
-
-(defun misskey-directory--handle-success (view state token phase payload)
-  "Install relationship PAYLOAD for PHASE when TOKEN owns VIEW and STATE."
-  (when (misskey-directory--state-current-p view state token)
-    (condition-case err
-        (let* ((relationships
-                (misskey-directory--validate-payload state payload))
-               (current (plist-get state :items))
-               (new
-                (if (eq phase 'older)
-                    (misskey-directory--new-relationships
-                     current relationships)
-                  relationships)))
-          (dolist (relationship relationships)
-            (misskey-merge-user-state
-             (appkit-view-app view)
-             (misskey-directory--relationship-user state relationship)
-             (nth 1 token)))
-          (setf (plist-get state :items)
-                (if (eq phase 'older) (append current new) relationships)
-                (plist-get state :phase) 'ready
-                (plist-get state :message) nil
-                (plist-get state :request-token) nil
-                (plist-get state :loaded-p) t)
-          (setf (plist-get state :older-exhausted-p)
-                (if (eq phase 'older)
-                    (null new)
-                  (null relationships)))
-          (appkit-request-sync view :structure t :part 'directory)
-          (message (if (eq phase 'older)
-                       "Loaded %d more Misskey users"
-                     "Loaded %d Misskey users")
-                   (length new)))
-      (error
-       (misskey-directory--handle-error
-        view state token (error-message-string err))))))
-
-(defun misskey-directory--cancel-request (view state)
-  "Cancel VIEW's active relationship request for STATE."
-  (setf (plist-get state :request-token) nil)
-  (appkit-view-operation-cancel view misskey-directory--request-key))
+OBSERVATION versions canonical entity merges."
+  (condition-case err
+      (let* ((relationships
+              (misskey-directory--validate-payload state payload))
+             (current (plist-get state :items))
+             (new
+              (if (eq phase 'older)
+                  (misskey-directory--new-relationships
+                   current relationships)
+                relationships)))
+        (dolist (relationship relationships)
+          (misskey-merge-user-state
+           (appkit-view-app view)
+           (misskey-directory--relationship-user state relationship)
+           observation))
+        (setf (plist-get state :items)
+              (if (eq phase 'older) (append current new) relationships)
+              (plist-get state :phase) 'ready
+              (plist-get state :message) nil
+              (plist-get state :loaded-p) t)
+        (setf (plist-get state :older-exhausted-p)
+              (if (eq phase 'older)
+                  (null new)
+                (null relationships)))
+        (appkit-request-sync view :structure t :part 'directory)
+        (message (if (eq phase 'older)
+                     "Loaded %d more Misskey users"
+                   "Loaded %d Misskey users")
+                 (length new)))
+    (error
+     (misskey-directory--handle-error
+      view state (error-message-string err)))))
 
 (defun misskey-directory--request (view phase)
   "Start relationship VIEW request for PHASE."
@@ -330,46 +312,26 @@
           (unless (and (stringp cursor) (not (string-empty-p cursor)))
             (user-error "The last Misskey relationship has no valid ID"))
           (setq parameters (plist-put parameters :untilId cursor))))
-      (misskey-directory--cancel-request view state)
-      (let ((token
-             (list phase
-                   (misskey-state-observe (appkit-view-app view))))
-            operation request)
-        (setf (plist-get state :request-token) token
-              (plist-get state :phase) phase
-              (plist-get state :message) nil)
-        (setq operation
+      (let* ((observation (misskey-state-observe (appkit-view-app view)))
+             (operation
               (appkit-view-operation-begin
-               view misskey-directory--request-key
-               :cancel-function #'misskey-http-cancel))
+               view misskey-directory--request-key)))
+        (setf (plist-get state :phase) phase
+              (plist-get state :message) nil)
         (appkit-request-sync view :structure t :part 'directory)
-        (setq request
-              (misskey-http-read
-               (misskey-directory--endpoint (plist-get state :kind))
-               parameters
-               (lambda (payload)
-                 (when (misskey-directory--operation-current-p
-                        view state token operation)
-                   (appkit-view-operation-finish operation)
-                   (misskey-directory--handle-success
-                    view state token phase payload)))
-               :errback
-               (lambda (failure)
-                 (when (misskey-directory--operation-current-p
-                        view state token operation)
-                   (appkit-view-operation-finish operation)
-                   (misskey-directory--handle-error
-                    view state token failure)))
-               :account (plist-get state :account)
-               :owner view))
-        (appkit-view-operation-bind operation request)
-        (when (and (null request)
-                   (misskey-directory--operation-current-p
-                    view state token operation))
-          (appkit-view-operation-finish operation)
-          (misskey-directory--handle-error
-           view state token "Misskey directory request did not start"))
-        request))))
+        (misskey-http-read
+         (misskey-directory--endpoint (plist-get state :kind))
+         parameters
+         (lambda (payload)
+           (when (appkit-view-operation-finish operation)
+             (misskey-directory--handle-success
+              view state observation phase payload)))
+         :errback
+         (lambda (failure)
+           (when (appkit-view-operation-finish operation)
+             (misskey-directory--handle-error view state failure)))
+         :account (plist-get state :account)
+         :owner operation)))))
 
 (defun misskey-directory--setup-view (view)
   "Initialize relationship directory VIEW."
@@ -414,8 +376,7 @@
                 (list :type 'relationship-directory
                       :account target :kind kind :subject-user user
                       :items nil :phase 'initial :message nil
-                      :request-token nil :loaded-p nil
-                      :older-exhausted-p nil)))
+                      :loaded-p nil :older-exhausted-p nil)))
            (view
             (appkit-open-view
              :app app :id id :mode #'misskey-directory-mode

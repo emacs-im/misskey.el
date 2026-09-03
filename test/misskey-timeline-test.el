@@ -112,7 +112,9 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should (equal (car captured) "notes/timeline"))
               (should (equal (cadr captured)
                              '(:limit 20 :allowPartial t)))
-              (should (eq (nth 2 captured) view))
+              (should (appkit-view-operation-p (nth 2 captured)))
+              (should (eq (appkit-view-operation-view (nth 2 captured))
+                          view))
               (should (equal (nth 3 captured)
                              (plist-get
                               (appkit-view-state view) :account)))
@@ -190,7 +192,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
             (with-current-buffer buffer
               (should
                (memq #'appkit-view-refresh-responsive-geometry
-                     window-size-change-functions))
+                     window-state-change-functions))
               (should
                (memq #'appkit-view-refresh-responsive-geometry
                      text-scale-mode-hook))
@@ -203,7 +205,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (should (= heading-line (line-number-at-pos))))
               (setq render-width 160)
               (run-hook-with-args
-               'window-size-change-functions
+               'window-state-change-functions
                (get-buffer-window buffer t)))
             (misskey-timeline-test--flush view)
             (with-current-buffer buffer
@@ -290,9 +292,20 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                ((symbol-function 'misskey--authenticated-account)
                 #'misskey-timeline-test--authenticated-account)
                ((symbol-function 'misskey-http-read)
-                (lambda (endpoint _parameters callback &rest _options)
-                  (let ((request (make-symbol endpoint)))
-                    (push (list endpoint callback request) requests)
+                (lambda (endpoint _parameters callback &rest options)
+                  (let* ((request (make-symbol endpoint))
+                         (owner (plist-get options :owner))
+                         (handle
+                          (appkit-register-handle
+                           owner 'function request #'misskey-http-cancel)))
+                    (push
+                     (list
+                      endpoint
+                      (lambda (payload)
+                        (appkit-retire-handle handle)
+                        (funcall callback payload))
+                      request owner)
+                     requests)
                     request)))
                ((symbol-function 'misskey-http-cancel)
                 (lambda (request)
@@ -401,7 +414,9 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should
                (equal (cadar requests)
                       '(:limit 20 :allowPartial t :untilId "n2")))
-              (should (eq (nth 3 (car requests)) view))
+              (should (eq (appkit-view-operation-view
+                           (nth 3 (car requests)))
+                          view))
               (should-error (misskey-timeline-load-more)
                             :type 'user-error)
               (funcall

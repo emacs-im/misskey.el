@@ -224,93 +224,54 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
                       (caddr (misskey-profile--mode-spec mode)))))
     (plist-put parameters :userId (misskey-user-id user))))
 
-(defun misskey-profile--state-current-p (view state token)
-  "Return non-nil when TOKEN may still update profile STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (plist-get state :profile-request-token))))
+(defun misskey-profile--handle-error (view state failure)
+  "Install profile FAILURE in VIEW STATE."
+  (setf (plist-get state :profile-loading-p) nil
+        (plist-get state :phase) 'error
+        (plist-get state :message) failure)
+  (appkit-request-sync view :part 'frame :position t)
+  (message "%s" failure))
 
-(defun misskey-profile--operation-current-p
-    (view state token operation)
-  "Return non-nil when TOKEN and OPERATION may update profile STATE in VIEW."
-  (and (misskey-profile--state-current-p view state token)
-       (appkit-view-operation-current-p operation)))
-
-(defun misskey-profile--handle-error (view state token failure)
-  "Show profile FAILURE when TOKEN still owns STATE in VIEW."
-  (when (misskey-profile--state-current-p view state token)
-    (setf (plist-get state :profile-request-token) nil
-          (plist-get state :phase) 'error
-          (plist-get state :message) failure)
-    (appkit-request-sync view :part 'frame :position t)
-    (message "%s" failure)))
-
-(defun misskey-profile--handle-user (view state token payload)
-  "Install profile PAYLOAD when TOKEN still owns STATE in VIEW."
-  (when (misskey-profile--state-current-p view state token)
-    (condition-case err
-        (let ((user (misskey-profile--validate-user payload)))
-          (misskey-merge-user-state
-           (appkit-view-app view) user (nth 1 token))
-          (setf (plist-get state :profile-request-token) nil
-                (plist-get state :profile-user) user
-                (plist-get state :title) (misskey-user-label user))
-          (misskey-feed-reset-query
-           view "users/notes"
-           (misskey-profile--note-parameters
-            state (plist-get state :profile-mode))))
-      (error
-       (misskey-profile--handle-error
-        view state token (error-message-string err))))))
-
-(defun misskey-profile--cancel-user-request (view state)
-  "Cancel VIEW's active user lookup for STATE."
-  (setf (plist-get state :profile-request-token) nil)
-  (appkit-view-operation-cancel view misskey-profile--request-key))
+(defun misskey-profile--handle-user (view state observation payload)
+  "Install profile PAYLOAD in VIEW STATE using OBSERVATION."
+  (condition-case err
+      (let ((user (misskey-profile--validate-user payload)))
+        (misskey-merge-user-state
+         (appkit-view-app view) user observation)
+        (setf (plist-get state :profile-loading-p) nil
+              (plist-get state :profile-user) user
+              (plist-get state :title) (misskey-user-label user))
+        (misskey-feed-reset-query
+         view "users/notes"
+         (misskey-profile--note-parameters
+          state (plist-get state :profile-mode))))
+    (error
+     (misskey-profile--handle-error
+      view state (error-message-string err)))))
 
 (defun misskey-profile--request-user (view)
   "Resolve and load VIEW's profile user."
   (let ((state (misskey-profile--state view)))
-    (misskey-profile--cancel-user-request view state)
     (misskey-feed-cancel-request view)
-    (let ((token
-           (list 'profile
-                 (misskey-state-observe (appkit-view-app view))))
-          operation request)
-      (setf (plist-get state :profile-request-token) token
+    (let* ((observation (misskey-state-observe (appkit-view-app view)))
+           (operation
+            (appkit-view-operation-begin view misskey-profile--request-key)))
+      (setf (plist-get state :profile-loading-p) t
             (plist-get state :phase) 'initial
             (plist-get state :message) nil)
-      (setq operation
-            (appkit-view-operation-begin
-             view misskey-profile--request-key
-             :cancel-function #'misskey-http-cancel))
       (appkit-request-sync view :part 'frame :position t)
-      (setq request
-            (misskey-http-read
-             "users/show" (plist-get state :profile-reference)
-             (lambda (payload)
-               (when (misskey-profile--operation-current-p
-                      view state token operation)
-                 (appkit-view-operation-finish operation)
-                 (misskey-profile--handle-user
-                  view state token payload)))
-             :errback
-             (lambda (failure)
-               (when (misskey-profile--operation-current-p
-                      view state token operation)
-                 (appkit-view-operation-finish operation)
-                 (misskey-profile--handle-error
-                  view state token failure)))
-             :account (plist-get state :account)
-             :owner view))
-      (appkit-view-operation-bind operation request)
-      (when (and (null request)
-                 (misskey-profile--operation-current-p
-                  view state token operation))
-        (appkit-view-operation-finish operation)
-        (misskey-profile--handle-error
-         view state token "Misskey profile request did not start"))
-      request)))
+      (misskey-http-read
+       "users/show" (plist-get state :profile-reference)
+       (lambda (payload)
+         (when (appkit-view-operation-finish operation)
+           (misskey-profile--handle-user
+            view state observation payload)))
+       :errback
+       (lambda (failure)
+         (when (appkit-view-operation-finish operation)
+           (misskey-profile--handle-error view state failure)))
+       :account (plist-get state :account)
+       :owner operation))))
 
 (defun misskey-profile--setup-view (view)
   "Initialize profile VIEW and request its user."
@@ -332,7 +293,7 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
         (misskey-profile--mode-spec mode)
         (unless (eq mode (plist-get state :profile-mode))
           (setf (plist-get state :profile-mode) mode)
-          (unless (plist-get state :profile-request-token)
+          (unless (plist-get state :profile-loading-p)
             (unless (plist-get state :profile-user)
               (user-error "The current profile has not loaded a user"))
             (misskey-feed-reset-query
@@ -362,7 +323,7 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
   (interactive)
   (if-let* ((view (misskey-profile--current-view)))
       (let ((state (misskey-profile--state view)))
-        (when (plist-get state :profile-request-token)
+        (when (plist-get state :profile-loading-p)
           (user-error "The Misskey profile is still loading its user"))
         (unless (plist-get state :profile-user)
           (user-error "The current profile has not loaded a user"))
@@ -426,7 +387,7 @@ the account selected by current customization."
                 (setf (plist-get feed :profile-reference) reference
                       (plist-get feed :profile-user) nil
                       (plist-get feed :profile-mode) 'notes
-                      (plist-get feed :profile-request-token) nil)
+                      (plist-get feed :profile-loading-p) nil)
                 feed)))
          (view
           (appkit-open-view
@@ -436,7 +397,7 @@ the account selected by current customization."
            :parts '(frame entries) :position-policy 'semantic
            :setup #'misskey-profile--setup-view :select t)))
     (unless (plist-get state :profile-user)
-      (unless (plist-get state :profile-request-token)
+      (unless (plist-get state :profile-loading-p)
         (misskey-profile--request-user view)))
     view))
 

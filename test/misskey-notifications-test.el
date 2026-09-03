@@ -181,24 +181,27 @@
          (account (misskey--account-create :origin "https://example.social" :auth-source-user "TOKEN" :remote-user-id "self"))
          (request (list 'initial-request))
          cancelled
+         operation
          view)
     (unwind-protect
         (cl-letf (((symbol-function 'message) #'ignore)
                   ((symbol-function 'misskey-http-read)
-                   (lambda (&rest _args) request))
+                   (lambda (_endpoint _parameters _callback &rest options)
+                     (setq operation (plist-get options :owner))
+                     (appkit-register-handle
+                      operation 'function request #'misskey-http-cancel)
+                     request))
                   ((symbol-function 'misskey-http-cancel)
                    (lambda (active) (setq cancelled active))))
           (setq view (misskey-notifications account))
-          (let* ((state (appkit-view-state view))
-                 (token (plist-get state :request-token)))
-            (with-current-buffer (appkit-view-buffer view)
-              (should-error (misskey-notifications-load-more)
-                            :type 'user-error))
-            (should (eq token (plist-get state :request-token)))
-            (should-not cancelled)
-            (appkit-view-operation-cancel
-             view misskey-notifications--request-key)
-            (should (eq cancelled request))))
+          (with-current-buffer (appkit-view-buffer view)
+            (should-error (misskey-notifications-load-more)
+                          :type 'user-error))
+          (should (appkit-view-operation-current-p operation))
+          (should-not cancelled)
+          (appkit-view-operation-cancel
+           view misskey-notifications--request-key)
+          (should (eq cancelled request)))
       (when (appkit-view-p view)
         (appkit-kill-view view t))
       (misskey-stop))))

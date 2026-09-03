@@ -115,19 +115,18 @@
                   ((symbol-function 'misskey-http-cancel)
                    (lambda (request) (setq cancelled request))))
           (setq view (misskey-profile-open "u1" account))
-          (let* ((state (appkit-view-state view))
-                 (lookup-token (plist-get state :profile-request-token)))
+          (let ((state (appkit-view-state view)))
             (with-current-buffer (appkit-view-buffer view)
               (misskey-profile-switch-mode 'media)
               (should-error (misskey-profile-load-more) :type 'user-error))
-            (should (eq lookup-token
-                        (plist-get state :profile-request-token)))
+            (should (plist-get state :profile-loading-p))
             (should (eq 'media (plist-get state :profile-mode)))
             (should-not notes-parameters)
             (should-not cancelled)
             (funcall
              user-callback
              '((id . "u1") (username . "alice") (name . "Alice")))
+            (should-not (plist-get state :profile-loading-p))
             (should (equal (plist-get notes-parameters :userId) "u1"))
             (should (plist-get notes-parameters :withFiles))
             (with-current-buffer (appkit-view-buffer view)
@@ -141,11 +140,12 @@
          (account (misskey--account-create :origin "https://example.social" :auth-source-user "TOKEN" :remote-user-id "self"))
          (request (list 'notes-request))
          cancelled
+         operation
          view)
     (unwind-protect
         (cl-letf (((symbol-function 'message) #'ignore)
                   ((symbol-function 'misskey-http-read)
-                   (lambda (endpoint _parameters callback &rest _options)
+                   (lambda (endpoint _parameters callback &rest options)
                      (if (equal endpoint "users/show")
                          (progn
                            (funcall
@@ -153,17 +153,18 @@
                             '((id . "u1") (username . "alice")
                               (name . "Alice")))
                            nil)
+                       (setq operation (plist-get options :owner))
+                       (appkit-register-handle
+                        operation 'function request #'misskey-http-cancel)
                        request)))
                   ((symbol-function 'misskey-http-cancel)
                    (lambda (active) (setq cancelled active))))
           (setq view (misskey-profile-open "u1" account))
-          (let* ((state (appkit-view-state view))
-                 (token (plist-get state :request-token)))
-            (should-error (misskey-feed-load-more view) :type 'user-error)
-            (should (eq token (plist-get state :request-token)))
-            (should-not cancelled)
-            (appkit-view-operation-cancel view misskey-feed--request-key)
-            (should (eq cancelled request))))
+          (should-error (misskey-feed-load-more view) :type 'user-error)
+          (should (appkit-view-operation-current-p operation))
+          (should-not cancelled)
+          (appkit-view-operation-cancel view misskey-feed--request-key)
+          (should (eq cancelled request)))
       (when (appkit-view-p view)
         (appkit-kill-view view t))
       (misskey-stop))))
