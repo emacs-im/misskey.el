@@ -139,40 +139,20 @@
                when position return position)
       'preserve))
 
-(defun misskey-thread--sync (view invalidations)
-  "Synchronize thread VIEW from coalesced INVALIDATIONS."
-  (let* ((state (misskey-thread--state view))
-         (events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (position (misskey-thread--position-intent events))
-         (parts (appkit-invalidations-parts invalidations))
-         (geometry-p (memq 'geometry parts))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (all-resources-p (memq 'all resources))
-         (entry-keys (appkit-invalidations-entry-keys invalidations))
-         (reconcile-p
-          (or geometry-p
-              (appkit-invalidations-structure-p invalidations)
-              entry-keys resources))
-         (rows (and reconcile-p
-                    (misskey-thread--project
-                     state (appkit-view-app view)))))
-    (appkit-projection-sync
-     view rows
-     :header (misskey-thread--frame state)
-     :footer
-     (concat "\ng refresh   n/p note   RET reveal CW"
-             (if (plist-get state :replies-exhausted-p)
-                 "   replies exhausted\n"
-               "   N more replies\n"))
-     :force-keys
-     (append entry-keys
-             (and (or geometry-p all-resources-p)
-                  (mapcar #'appkit-projection-row-key rows)))
-     :changed-dependencies (and (not all-resources-p) resources)
-     :position position
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)))
+(defun misskey-thread--sync (view invalidations events)
+  "Synchronize thread VIEW from coalesced INVALIDATIONS and EVENTS."
+  (let ((state (misskey-thread--state view)))
+    (appkit-projection-sync-invalidations
+        view invalidations
+        (misskey-thread--project state (appkit-view-app view))
+      :reconcile-parts '(entries)
+      :header (misskey-thread--frame state)
+      :footer
+      (concat "\ng refresh   n/p note   RET reveal CW"
+              (if (plist-get state :replies-exhausted-p)
+                  "   replies exhausted\n"
+                "   N more replies\n"))
+      :position (misskey-thread--position-intent events))))
 
 (defun misskey-thread--setup-view (view)
   "Initialize VIEW's keyed thread projection."

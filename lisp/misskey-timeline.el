@@ -216,45 +216,22 @@
                when position return position)
       'preserve))
 
-(defun misskey-timeline--sync (view invalidations)
-  "Synchronize VIEW from coalesced INVALIDATIONS."
-  (let* ((state (misskey-timeline--view-state view))
-         (events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (position (misskey-timeline--position-intent events))
-         (parts (appkit-invalidations-parts invalidations))
-         (geometry-p (memq 'geometry parts))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (all-resources-p (memq 'all resources))
-         (entry-keys (appkit-invalidations-entry-keys invalidations))
-         (reconcile-p
-          (or geometry-p
-              (appkit-invalidations-structure-p invalidations)
-              entry-keys
-              resources))
-         (rows
-          (and reconcile-p
-               (misskey-render-project-notes
-                (plist-get state :items) (appkit-view-app view))))
-         (force-keys
-          (append
-           entry-keys
-           (and (or geometry-p all-resources-p)
-                (mapcar #'appkit-projection-row-key rows)))))
-    (appkit-projection-sync
-     view rows
-     :header (misskey-timeline--frame state)
-     :footer
-     (concat "\ng refresh   TAB next timeline   n/p note   "
-             (if (plist-get state :older-exhausted-p)
-                 "older exhausted"
-               "N older")
-             "   RET reveal CW   c compose\n")
-     :force-keys force-keys
-     :changed-dependencies (and (not all-resources-p) resources)
-     :position position
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)))
+(defun misskey-timeline--sync (view invalidations events)
+  "Synchronize VIEW from coalesced INVALIDATIONS and EVENTS."
+  (let ((state (misskey-timeline--view-state view)))
+    (appkit-projection-sync-invalidations
+        view invalidations
+        (misskey-render-project-notes
+         (plist-get state :items) (appkit-view-app view))
+      :reconcile-parts '(entries)
+      :header (misskey-timeline--frame state)
+      :footer
+      (concat "\ng refresh   TAB next timeline   n/p note   "
+              (if (plist-get state :older-exhausted-p)
+                  "older exhausted"
+                "N older")
+              "   RET reveal CW   c compose\n")
+      :position (misskey-timeline--position-intent events))))
 
 (defun misskey-timeline--setup-view (view)
   "Initialize VIEW's keyed timeline projection."

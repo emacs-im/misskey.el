@@ -261,7 +261,7 @@
                  :label "No notifications returned."))))))
     entries))
 
-(defun misskey-notifications--sync (view _invalidations)
+(defun misskey-notifications--sync (view _invalidations _events)
   "Synchronize notification VIEW."
   (with-current-buffer (appkit-view-buffer view)
     (appkit-directory-reconcile

@@ -239,7 +239,7 @@
                  "N load more   g refresh"))))))
     entries))
 
-(defun misskey-directory--sync (view _invalidations)
+(defun misskey-directory--sync (view _invalidations _events)
   "Synchronize relationship directory VIEW."
   (with-current-buffer (appkit-view-buffer view)
     (appkit-directory-reconcile

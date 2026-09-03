@@ -135,40 +135,21 @@ replaces the default empty result text."
         (funcall function state)
       (funcall fallback state))))
 
-(defun misskey-feed-sync (view invalidations)
-  "Synchronize note feed VIEW from coalesced INVALIDATIONS."
-  (let* ((state (misskey-feed-view-state view))
-         (events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (position (misskey-feed--position-intent events))
-         (parts (appkit-invalidations-parts invalidations))
-         (geometry-p (memq 'geometry parts))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (all-resources-p (memq 'all resources))
-         (entry-keys (appkit-invalidations-entry-keys invalidations))
-         (reconcile-p
-          (or geometry-p
-              (appkit-invalidations-structure-p invalidations)
-              entry-keys resources))
-         (rows
-          (and reconcile-p
-               (misskey-render-project-notes
-                (plist-get state :items) (appkit-view-app view))))
-         (force-keys
-          (append entry-keys
-                  (and (or geometry-p all-resources-p)
-                       (mapcar #'appkit-projection-row-key rows)))))
-    (appkit-projection-sync
-     view rows
-     :header (misskey-feed--generated-text
-              state :header-function #'misskey-feed-default-header)
-     :footer (misskey-feed--generated-text
-              state :footer-function #'misskey-feed-default-footer)
-     :force-keys force-keys
-     :changed-dependencies (and (not all-resources-p) resources)
-     :position position
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)))
+(defun misskey-feed-sync (view invalidations events)
+  "Synchronize note feed VIEW from coalesced INVALIDATIONS and EVENTS."
+  (let ((state (misskey-feed-view-state view)))
+    (appkit-projection-sync-invalidations
+        view invalidations
+        (misskey-render-project-notes
+         (plist-get state :items) (appkit-view-app view))
+      :reconcile-parts '(entries)
+      :header
+      (misskey-feed--generated-text
+       state :header-function #'misskey-feed-default-header)
+      :footer
+      (misskey-feed--generated-text
+       state :footer-function #'misskey-feed-default-footer)
+      :position (misskey-feed--position-intent events))))
 
 (defun misskey-feed-setup-view (view)
   "Initialize VIEW's stable note projection."
