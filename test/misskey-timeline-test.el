@@ -189,10 +189,10 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
             (misskey-timeline-test--flush view)
             (with-current-buffer buffer
               (should
-               (memq #'appkit-view--on-window-geometry-change
+               (memq #'appkit-view-refresh-responsive-geometry
                      window-size-change-functions))
               (should
-               (memq #'appkit-view--on-display-geometry-change
+               (memq #'appkit-view-refresh-responsive-geometry
                      text-scale-mode-hook))
               (goto-char (point-min))
               (should (search-forward "…" nil t))
