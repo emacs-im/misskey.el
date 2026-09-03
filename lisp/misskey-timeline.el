@@ -373,31 +373,31 @@ OBSERVATION versions canonical note merges."
            (kind (plist-get state :kind))
            (until-id
             (and (eq phase 'older)
-                 (misskey-note-id (car (last items)))))
-           (operation
-            (appkit-view-operation-begin
-             view misskey-timeline--request-key)))
+                 (misskey-note-id (car (last items))))))
       (unless (or (not (eq phase 'older)) until-id)
         (error "Misskey timeline has no older-page cursor"))
-      (setf (plist-get state :loading-p) t
-            (plist-get state :phase) phase
-            (plist-get state :message) nil)
-      (appkit-request-sync view :part 'frame :position t)
-      (misskey-http-read
-       (misskey-timeline--endpoint kind)
-       (append
-        (list :limit misskey-timeline-limit :allowPartial t)
-        (and until-id (list :untilId until-id)))
-       (lambda (payload)
-         (when (appkit-view-operation-finish operation)
-           (misskey-timeline--handle-success
-            view state observation phase payload)))
-       :errback
-       (lambda (failure)
-         (when (appkit-view-operation-finish operation)
-           (misskey-timeline--handle-error view state failure)))
-       :owner operation
-       :account account))))
+      (let ((operation
+             (appkit-view-operation-begin
+              view misskey-timeline--request-key)))
+        (setf (plist-get state :loading-p) t
+              (plist-get state :phase) phase
+              (plist-get state :message) nil)
+        (appkit-request-sync view :part 'frame :position t)
+        (misskey-http-read
+         (misskey-timeline--endpoint kind)
+         (append
+          (list :limit misskey-timeline-limit :allowPartial t)
+          (and until-id (list :untilId until-id)))
+         (lambda (payload)
+           (when (appkit-view-operation-finish operation)
+             (misskey-timeline--handle-success
+              view state observation phase payload)))
+         :errback
+         (lambda (failure)
+           (when (appkit-view-operation-finish operation)
+             (misskey-timeline--handle-error view state failure)))
+         :owner operation
+         :account account)))))
 
 (defun misskey-timeline--capture-position (view)
   "Return VIEW's semantic position snapshot."

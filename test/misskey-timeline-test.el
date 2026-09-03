@@ -410,6 +410,17 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (appkit-discussion-next-entry)
               (appkit-discussion-next-entry)
               (should (equal (appkit-discussion-key-at-point) "n2"))
+              (let* ((state (misskey-timeline--view-state view))
+                     (oldest (car (last (plist-get state :items)))))
+                (unwind-protect
+                    (progn
+                      (setf (alist-get 'id oldest) nil)
+                      (should-error (misskey-timeline-load-more) :type 'error)
+                      (should-not
+                       (gethash
+                        misskey-timeline--request-key
+                        (appkit-view-request-table view))))
+                  (setf (alist-get 'id oldest) "n2")))
               (misskey-timeline-load-more)
               (should
                (equal (cadar requests)
