@@ -16,7 +16,7 @@
 (require 'appkit-invalidation)
 (require 'appkit-discussion)
 (require 'appkit-projection)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'appkit-position)
 (require 'appkit-ui)
 (require 'misskey-actions)

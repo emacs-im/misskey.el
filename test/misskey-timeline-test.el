@@ -175,7 +175,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
           (cl-letf (((symbol-function 'message) #'ignore)
                     ((symbol-function 'misskey--authenticated-account)
                      #'misskey-timeline-test--authenticated-account)
-                    ((symbol-function 'appkit-view-window-fill-column)
+                    ((symbol-function 'appkit-geometry-window-width)
                      (lambda (&rest _arguments) render-width))
                     ((symbol-function 'misskey-http-read)
                      (lambda (_endpoint _parameters callback &rest _options)

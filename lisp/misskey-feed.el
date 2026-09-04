@@ -17,7 +17,7 @@
 (require 'appkit-discussion)
 (require 'appkit-invalidation)
 (require 'appkit-projection)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'misskey-core)
 (require 'misskey-http)
 (require 'misskey-media)
