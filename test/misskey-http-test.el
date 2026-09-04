@@ -66,29 +66,30 @@
     "{\"false\":false,\"null\":null,\"ids\":[\"a\",\"b\"]}")))
 
 (ert-deftest misskey-http-rejects-hostile-token-before-curl-config ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-app-start 'misskey :id (make-symbol "hostile-token")))
-         (started-p nil)
-         failure)
+  (let*
+      ((misskey-instance-url "https://example.social")
+       (owner
+        (appkit-app-start misskey--app-type :identity
+                          (make-symbol "hostile-token")))
+       (started-p nil) failure)
     (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account)
-                     "safe\"\nheader = \"X-Evil: yes"))
-                  ((symbol-function 'make-process)
-                   (lambda (&rest _)
-                     (setq started-p t)
-                     (ert-fail "Hostile token reached curl"))))
-          (misskey-http-post
-           "notes/create" '(:text "hello") #'ignore
-           :errback (lambda (message) (setq failure message))
-           :owner owner)
+        (cl-letf
+            (((symbol-function 'executable-find)
+              (lambda (_program) "/usr/bin/curl"))
+             ((symbol-function 'misskey--auth-token)
+              (lambda (&optional _account)
+                "safe\"\nheader = \"X-Evil: yes"))
+             ((symbol-function 'make-process)
+              (lambda (&rest _) (setq started-p t)
+                (ert-fail "Hostile token reached curl"))))
+          (misskey-http-post "notes/create" '(:text "hello") #'ignore
+                             :errback
+                             (lambda (message) (setq failure message))
+                             :owner owner)
           (should-not started-p)
           (should (string-match-p "invalid" failure))
           (should-not (string-match-p "X-Evil" failure)))
-      (when (appkit-app-live-p owner)
-        (appkit-app-close owner)))))
+      (when (appkit-app-live-p owner) (appkit-app-close owner)))))
 
 (ert-deftest misskey-http-redacts-secret-from-delivered-errors ()
   (let (failure)
@@ -102,28 +103,32 @@
     (should (string-match-p "\\[REDACTED\\]" failure))
     (should-not (string-match-p "SECRET" failure))))
 
-(ert-deftest misskey-http-post-dispatch-errors-are-unknown-and-redacted ()
-  (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-app-start 'misskey :id (make-symbol "post-error")))
-         failure)
+(ert-deftest
+    misskey-http-post-dispatch-errors-are-unknown-and-redacted ()
+  (let*
+      ((misskey-instance-url "https://example.social")
+       (owner
+        (appkit-app-start misskey--app-type :identity
+                          (make-symbol "post-error")))
+       failure)
     (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (_program) "/usr/bin/curl"))
-                  ((symbol-function 'misskey--auth-token)
-                   (lambda (&optional _account) "SECRET"))
-                  ((symbol-function 'misskey-http--start-curl)
-                   (lambda (request &rest _)
-                     (setf (misskey-http--request-dispatched-p request) t)
-                     (error "send failed with SECRET"))))
-          (misskey-http-post
-           "notes/create" '(:text "hello") #'ignore
-           :errback (lambda (message) (setq failure message))
-           :owner owner)
+        (cl-letf
+            (((symbol-function 'executable-find)
+              (lambda (_program) "/usr/bin/curl"))
+             ((symbol-function 'misskey--auth-token)
+              (lambda (&optional _account) "SECRET"))
+             ((symbol-function 'misskey-http--start-curl)
+              (lambda (request &rest _)
+                (setf (misskey-http--request-dispatched-p request) t)
+                (error "send failed with SECRET"))))
+          (misskey-http-post "notes/create" '(:text "hello") #'ignore
+                             :errback
+                             (lambda (message) (setq failure message))
+                             :owner owner)
           (should (string-match-p "unknown" failure))
           (should (string-match-p "\\[REDACTED\\]" failure))
           (should-not (string-match-p "SECRET" failure)))
-      (when (appkit-app-live-p owner)
-        (appkit-app-close owner)))))
+      (when (appkit-app-live-p owner) (appkit-app-close owner)))))
 
 (ert-deftest misskey-http-auth-config-keeps-token-off-command-line ()
   (let ((file (make-temp-file "misskey-http-command-")))
@@ -172,10 +177,10 @@
   (let* ((buffer (generate-new-buffer " *misskey-progress-stderr*"))
          events
          (request
-          (misskey-http--request-create
-           :callback #'ignore :errback #'ignore :writep t
-           :progress (lambda (event) (push (plist-get event :progress)
-                                           events))))
+           (misskey-http--request-create
+            :callback #'ignore :errback #'ignore :writep t
+            :progress (lambda (event) (push (plist-get event :progress)
+                                            events))))
          (process
           (make-pipe-process :name "misskey-progress-stderr"
                              :buffer buffer :noquery t)))
@@ -210,11 +215,11 @@
          (buffer (generate-new-buffer " *misskey-cap-test*"))
          failure
          (request
-          (misskey-http--request-create
-           :callback #'ert-fail
-           :errback (lambda (message) (setq failure message))
-           :writep t
-           :buffers (list buffer)))
+           (misskey-http--request-create
+            :callback #'ert-fail
+            :errback (lambda (message) (setq failure message))
+            :writep t
+            :buffers (list buffer)))
          (process
           (make-process :name "misskey-cap-test" :command '("cat")
                         :buffer buffer :noquery t)))
@@ -238,11 +243,11 @@
            (buffer (generate-new-buffer " *misskey-hostile-chunk*"))
            failure
            (request
-            (misskey-http--request-create
-             :callback #'ert-fail
-             :errback (lambda (message) (setq failure message))
-             :writep nil
-             :buffers (list buffer)))
+             (misskey-http--request-create
+              :callback #'ert-fail
+              :errback (lambda (message) (setq failure message))
+              :writep nil
+              :buffers (list buffer)))
            (process
             (make-process :name "misskey-hostile-chunk" :command '("cat")
                           :buffer buffer :coding 'binary :noquery t)))
@@ -259,8 +264,8 @@
          (misskey-http--response-limit 100)
          (buffer (generate-new-buffer " *misskey-header-test*"))
          (request
-          (misskey-http--request-create
-           :callback #'ignore :errback #'ert-fail :writep nil))
+           (misskey-http--request-create
+            :callback #'ignore :errback #'ert-fail :writep nil))
          (process
           (make-process :name "misskey-header-test" :command '("cat")
                         :buffer buffer :noquery t)))
@@ -294,8 +299,8 @@
 
 (ert-deftest misskey-http-partial-start-cleans-stderr-and-buffers ()
   (let ((request
-         (misskey-http--request-create
-          :callback #'ignore :errback #'ignore :writep nil))
+          (misskey-http--request-create
+           :callback #'ignore :errback #'ignore :writep nil))
         (real-make-process (symbol-function 'make-process))
         created-stderr)
     (cl-letf (((symbol-function 'make-pipe-process)

@@ -23,49 +23,62 @@
     (user . ((id . "u1") (username . "alice")))))
 
 (ert-deftest misskey-search-keeps-query-pagination-independent ()
-  (let* ((misskey--apps (make-hash-table :test #'equal))
+  (misskey-test-with-session
+    (let*
+        ((misskey--apps (make-hash-table :test #'equal))
          (misskey-search--serial 0)
-         (account (misskey--account-create :origin "https://example.social" :auth-source-user "TOKEN" :remote-user-id "self"))
+         (account
+          (misskey--account-create :origin "https://example.social"
+                                   :auth-source-user "TOKEN"
+                                   :remote-user-id "self"))
          requests foo bar)
-    (unwind-protect
-        (cl-letf (((symbol-function 'message) #'ignore)
-                  ((symbol-function 'misskey-http-read)
-                   (lambda (endpoint parameters callback &rest _options)
-                     (push (cons endpoint parameters) requests)
-                     (let* ((query (plist-get parameters :query))
-                            (until-id (plist-get parameters :untilId))
-                            (id (if until-id
-                                    (concat query "-2")
-                                  (concat query "-1"))))
-                       (funcall callback
-                                (list (misskey-search-test--note id query))))
-                     'request)))
-          (setq foo (misskey-search "foo" account)
-                bar (misskey-search "bar" account))
-          (appkit-sync-invalidations foo)
-          (appkit-sync-invalidations bar)
-          (should (equal (appkit-projection-keys foo) '("foo-1")))
-          (should (equal (appkit-projection-keys bar) '("bar-1")))
-          (with-current-buffer (appkit-view-buffer foo)
-            (misskey-search-load-more))
-          (appkit-sync-invalidations foo)
-          (should (equal (appkit-projection-keys foo)
-                         '("foo-1" "foo-2")))
-          (should (equal (appkit-projection-keys bar) '("bar-1")))
-          (let ((older
-                 (cl-find-if
-                  (lambda (request)
-                    (equal (plist-get (cdr request) :untilId) "foo-1"))
-                  requests)))
-            (should older)
-            (should (equal (car older) "notes/search"))
-            (should (equal (plist-get (cdr older) :query) "foo"))))
-      (when (appkit-view-p foo) (appkit-kill-view foo t))
-      (when (appkit-view-p bar) (appkit-kill-view bar t))
-      (misskey-stop))))
+      (unwind-protect
+          (cl-letf
+              (((symbol-function 'message) #'ignore)
+               ((symbol-function 'misskey-http-read)
+                (lambda (endpoint parameters callback &rest _options)
+                  (push (cons endpoint parameters) requests)
+                  (let*
+                      ((query (plist-get parameters :query))
+                       (until-id (plist-get parameters :untilId))
+                       (id
+                        (if until-id (concat query "-2")
+                          (concat query "-1"))))
+                    (funcall callback
+                             (list (misskey-search-test--note id query))))
+                  'request)))
+            (setq foo (misskey-search "foo" account) bar
+                  (misskey-search "bar" account))
+            (misskey-test-drain foo)
+            (should
+             (equal (misskey-test-visible-note-keys foo) '("foo-1")))
+            (should
+             (equal (misskey-test-visible-note-keys bar) '("bar-1")))
+            (with-current-buffer (appkit-surface-buffer foo)
+              (misskey-search-load-more))
+            (misskey-test-drain foo)
+            (should
+             (equal (misskey-test-visible-note-keys foo)
+                    '("foo-1" "foo-2")))
+            (should
+             (equal (misskey-test-visible-note-keys bar) '("bar-1")))
+            (let
+                ((older
+                  (cl-find-if
+                   (lambda (request)
+                     (equal (plist-get (cdr request) :untilId) "foo-1"))
+                   requests)))
+              (should older) (should (equal (car older) "notes/search"))
+              (should (equal (plist-get (cdr older) :query) "foo"))))
+        (when (appkit-surface-p foo)
+          (kill-buffer (appkit-surface-buffer foo)))
+        (when (appkit-surface-p bar)
+          (kill-buffer (appkit-surface-buffer bar)))
+        (misskey-stop)))))
 
 (ert-deftest misskey-search-rejects-empty-query ()
-  (should-error (misskey-search "  ") :type 'user-error))
+  (misskey-test-with-session
+    (should-error (misskey-search "  ") :type 'user-error)))
 
 (provide 'misskey-search-test)
 

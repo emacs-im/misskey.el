@@ -15,7 +15,7 @@
 (require 'subr-x)
 (require 'appkit-core)
 (require 'appkit-discussion)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-projection)
 (require 'appkit-presentation)
 (require 'misskey-core)
@@ -69,32 +69,20 @@ replaces the default empty result text."
 
 (defun misskey-feed-view-state (view &optional type)
   "Return VIEW's validated feed state, optionally requiring TYPE."
-  (let ((state (and (appkit-view-p view) (appkit-view-state view))))
+  (let
+      ((state
+        (and (appkit-surface-p view) (appkit-surface-model view))))
     (unless (misskey-feed-state-p state type)
       (error "Invalid Misskey %s feed state" (or type "note")))
     state))
 
 (defun misskey-feed-current-view (&optional type)
   "Return the current live feed view, optionally requiring TYPE."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
-              ((misskey-feed-state-p state type)))
+  (when-let*
+      ((view (appkit-current-surface)) ((appkit-surface-live-p view))
+       (state (appkit-surface-model view))
+       ((misskey-feed-state-p state type)))
     view))
-
-(defun misskey-feed--position-intent (events)
-  "Return the effective semantic position intent from EVENTS."
-  (or (cl-loop for event in events
-               when (eq (plist-get event :position) 'first)
-               return 'first)
-      (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when (and position (not (eq position 'preserve)))
-               return position)
-      (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when position return position)
-      'preserve))
 
 (defun misskey-feed-default-header (state)
   "Return the default generated header for feed STATE."
@@ -135,34 +123,19 @@ replaces the default empty result text."
         (funcall function state)
       (funcall fallback state))))
 
-(defun misskey-feed-sync (view invalidations events)
-  "Synchronize note feed VIEW from coalesced INVALIDATIONS and EVENTS."
-  (let ((state (misskey-feed-view-state view)))
-    (appkit-projection-sync-invalidations
-        view invalidations
-        (misskey-render-project-notes
-         (plist-get state :items) (appkit-view-app view))
-      :reconcile-parts '(entries)
-      :header
-      (misskey-feed--generated-text
-       state :header-function #'misskey-feed-default-header)
-      :footer
-      (misskey-feed--generated-text
-       state :footer-function #'misskey-feed-default-footer)
-      :position (misskey-feed--position-intent events))))
-
 (defun misskey-feed-setup-view (view)
   "Initialize VIEW's stable note projection."
   (misskey-feed-view-state view)
-  (appkit-projection-ensure
-   view
-   :printer #'misskey-render-insert-row
-   :anchor-property appkit-discussion-key-property
-   :no-separator-p t)
-  (appkit-view-enable-responsive-geometry view)
-  (appkit-view-enqueue-event view (list :position 'first))
-  (appkit-invalidate view :structure t :part 'frame :position t)
-  (appkit-sync-invalidations view))
+  (appkit-surface-enable-responsive-geometry view
+                                             (lambda (surface _width)
+                                               (misskey-dispatch
+                                                surface
+                                                (list :render
+                                                      (appkit-projection-change-create
+                                                       :geometry-p t
+                                                       :frame-p t
+                                                       :position
+                                                       'preserve))))))
 
 (defun misskey-feed--new-notes (current candidates)
   "Return CANDIDATES whose IDs do not occur in CURRENT."
@@ -178,33 +151,36 @@ replaces the default empty result text."
 
 (defun misskey-feed--handle-error (view state failure)
   "Install feed FAILURE in VIEW STATE."
-  (setf (plist-get state :phase) 'error
-        (plist-get state :message) failure)
-  (appkit-request-sync view :part 'frame :position t)
+  (setf (plist-get state :phase) 'error (plist-get state :message)
+        failure)
+  (misskey-dispatch view
+                    (list :render
+                          (appkit-projection-change-create :frame-p t
+                                                           :position
+                                                           'preserve)))
   (message "%s" failure))
 
 (defun misskey-feed--handle-success
     (view state observation phase payload)
-  "Install PAYLOAD in VIEW STATE for PHASE.
-
-OBSERVATION versions canonical note merges."
+  "Install PAYLOAD in VIEW STATE for PHASE.\n\nOBSERVATION versions canonical note merges."
   (condition-case err
-      (let* ((notes (misskey-note-validate-list payload))
-             (current (plist-get state :items))
-             (new-notes
-              (if (eq phase 'older)
-                  (misskey-feed--new-notes current notes)
-                notes))
-             (installed
-              (pcase phase
-                ('initial notes)
-                ('refresh
-                 (append notes (misskey-feed--new-notes notes current)))
-                ('older (append current new-notes))
-                (_ (error "Invalid Misskey feed phase: %S" phase)))))
+      (let*
+          ((notes (misskey-note-validate-list payload))
+           (current (plist-get state :items))
+           (new-notes
+            (if (eq phase 'older)
+                (misskey-feed--new-notes current notes)
+              notes))
+           (installed
+            (pcase phase
+              ('initial notes)
+              ('refresh
+               (append notes (misskey-feed--new-notes notes current)))
+              ('older (append current new-notes))
+              (_ (error "Invalid Misskey feed phase: %S" phase)))))
         (dolist (note notes)
-          (misskey-merge-note-state
-           (appkit-view-app view) note observation))
+          (misskey-merge-note-state (appkit-surface-app view) note
+                                    observation))
         (unless (eq phase 'older)
           (clrhash (plist-get state :revealed-content)))
         (setf (plist-get state :items) installed
@@ -215,26 +191,25 @@ OBSERVATION versions canonical note merges."
           ('initial
            (setf (plist-get state :older-exhausted-p) (null notes)))
           ('older
-           (setf (plist-get state :older-exhausted-p)
-                 (null new-notes))))
-        (appkit-view-enqueue-event
-         view (list :position (if (eq phase 'initial) 'first 'preserve)))
-        (appkit-request-sync view :structure t :part 'frame :position t)
+           (setf (plist-get state :older-exhausted-p) (null new-notes))))
+        (misskey-dispatch view
+                          (list :render
+                                (appkit-projection-change-create
+                                 :full-p t :frame-p t :position
+                                 (if (eq phase 'initial) 'first
+                                   'preserve))))
         (misskey-media-prefetch-notes view new-notes)
         (cond
          ((and (eq phase 'older) new-notes)
           (message "Loaded %d older Misskey notes" (length new-notes)))
-         ((eq phase 'older)
-          (message "No older Misskey notes"))
-         (t
-          (message "Loaded %d Misskey notes" (length notes)))))
+         ((eq phase 'older) (message "No older Misskey notes"))
+         (t (message "Loaded %d Misskey notes" (length notes)))))
     (error
-     (misskey-feed--handle-error
-      view state (error-message-string err)))))
+     (misskey-feed--handle-error view state (error-message-string err)))))
 
 (defun misskey-feed-cancel-request (view)
   "Cancel VIEW's active feed transport, if any."
-  (when (appkit-view-operation-cancel view misskey-feed--request-key)
+  (when (misskey-read-cancel view misskey-feed--request-key)
     (let ((state (misskey-feed-view-state view)))
       (setf (plist-get state :phase)
             (if (plist-get state :loaded-p) 'ready 'initial)))))
@@ -255,54 +230,63 @@ OBSERVATION versions canonical note merges."
     parameters))
 
 (defun misskey-feed-request (view phase)
-  "Start VIEW's note request for PHASE.
-
-PHASE is `initial', `refresh', or `older'."
+  "Start VIEW's note request for PHASE.\n\nPHASE is `initial', `refresh', or `older'."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Misskey feed request phase: %S" phase))
-  (let* ((state (misskey-feed-view-state view))
-         (endpoint (plist-get state :endpoint)))
+  (let*
+      ((state (misskey-feed-view-state view))
+       (endpoint (plist-get state :endpoint)))
     (unless (and (stringp endpoint) (not (string-empty-p endpoint)))
       (error "Misskey feed has no endpoint"))
-    (when (and (eq phase 'older)
-               (plist-get state :older-exhausted-p))
+    (when (and (eq phase 'older) (plist-get state :older-exhausted-p))
       (user-error "No older Misskey notes available"))
-    (let* ((parameters (misskey-feed--request-parameters state phase))
-           (observation (misskey-state-observe (appkit-view-app view)))
-           (operation
-            (appkit-view-operation-begin view misskey-feed--request-key)))
-      (setf (plist-get state :phase) phase
-            (plist-get state :message) nil)
-      (appkit-request-sync view :part 'frame :position t)
-      (misskey-http-read
-       endpoint parameters
-       (lambda (payload)
-         (when (appkit-view-operation-finish operation)
-           (misskey-feed--handle-success
-            view state observation phase payload)))
-       :errback
-       (lambda (failure)
-         (when (appkit-view-operation-finish operation)
-           (misskey-feed--handle-error view state failure)))
-       :account (plist-get state :account)
-       :owner operation))))
+    (let*
+        ((parameters (misskey-feed--request-parameters state phase))
+         (observation
+          (misskey-state-observe (appkit-surface-app view)))
+         (operation
+          (misskey-read-begin view misskey-feed--request-key)))
+      (setf (plist-get state :phase) phase (plist-get state :message)
+            nil)
+      (misskey-dispatch view
+                        (list :render
+                              (appkit-projection-change-create
+                               :frame-p t :position 'preserve)))
+      (misskey-http-read endpoint parameters
+                         (lambda (payload)
+                           (when (misskey-read-finish operation)
+                             (misskey-feed--handle-success view state
+                                                           observation
+                                                           phase
+                                                           payload)))
+                         :errback
+                         (lambda (failure)
+                           (when (misskey-read-finish operation)
+                             (misskey-feed--handle-error view state
+                                                         failure)))
+                         :account (plist-get state :account) :owner
+                         operation))))
 
-(defun misskey-feed-reset-query (view endpoint parameters &optional title)
+(defun misskey-feed-reset-query
+    (view endpoint parameters &optional title)
   "Reset VIEW to ENDPOINT and PARAMETERS, optionally replacing TITLE."
   (let ((state (misskey-feed-view-state view)))
     (misskey-feed-cancel-request view)
     (setf (plist-get state :endpoint) endpoint
           (plist-get state :parameters) (copy-sequence parameters)
-          (plist-get state :items) nil
-          (plist-get state :phase) 'initial
-          (plist-get state :message) nil
+          (plist-get state :items) nil (plist-get state :phase)
+          'initial (plist-get state :message) nil
           (plist-get state :loaded-p) nil
           (plist-get state :older-exhausted-p) nil)
-    (when title
-      (setf (plist-get state :title) title))
+    (when title (setf (plist-get state :title) title))
     (clrhash (plist-get state :revealed-content))
-    (appkit-view-enqueue-event view (list :position 'first))
-    (appkit-request-sync view :structure t :part 'frame :position t)
+    (misskey-dispatch view
+                      (list :render
+                            (appkit-projection-change-create :full-p t
+                                                             :frame-p
+                                                             t
+                                                             :position
+                                                             'first)))
     (misskey-feed-request view 'initial)))
 
 (defun misskey-feed-refresh (view)

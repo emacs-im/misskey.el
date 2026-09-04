@@ -16,7 +16,7 @@
 (require 'appkit-core)
 (require 'appkit-directory)
 (require 'misskey-actions)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'misskey-auth)
 (require 'misskey-core)
 (require 'misskey-http)
@@ -66,20 +66,22 @@
 
 (defun misskey-notifications--state (view)
   "Return VIEW's validated notification state."
-  (let ((state (and (appkit-view-p view) (appkit-view-state view))))
-    (unless (and (listp state)
-                 (eq (plist-get state :type) 'notifications)
-                 (misskey--account-p (plist-get state :account))
-                 (hash-table-p (plist-get state :acknowledged-ids)))
+  (let
+      ((state
+        (and (appkit-surface-p view) (appkit-surface-model view))))
+    (unless
+        (and (listp state) (eq (plist-get state :type) 'notifications)
+             (misskey--account-p (plist-get state :account))
+             (hash-table-p (plist-get state :acknowledged-ids)))
       (error "Invalid Misskey notification state"))
     state))
 
 (defun misskey-notifications--current-view ()
   "Return the current live notification view, or nil."
-  (when-let* ((view (appkit-current-view))
-              ((appkit-view-live-p view))
-              (state (appkit-view-state view))
-              ((eq (plist-get state :type) 'notifications)))
+  (when-let*
+      ((view (appkit-current-surface)) ((appkit-surface-live-p view))
+       (state (appkit-surface-model view))
+       ((eq (plist-get state :type) 'notifications)))
     view))
 
 (defun misskey-notifications--validate-list (payload)
@@ -261,56 +263,53 @@
                  :label "No notifications returned."))))))
     entries))
 
-(defun misskey-notifications--sync (view invalidations _events)
-  "Synchronize notification VIEW from INVALIDATIONS."
-  (when (appkit-invalidations-affect-p invalidations '(directory))
-    (with-current-buffer (appkit-view-buffer view)
-      (appkit-directory-reconcile
-       (appkit-directory-surface)
-       (misskey-notifications--project
-        (misskey-notifications--state view))))))
-
 (defun misskey-notifications--handle-read-error (view state failure)
   "Install notification read FAILURE in VIEW STATE."
-  (setf (plist-get state :phase) 'error
-        (plist-get state :message) failure)
-  (appkit-request-sync view :structure t :part 'directory)
+  (setf (plist-get state :phase) 'error (plist-get state :message)
+        failure)
+  (misskey-dispatch view
+                    (list :render
+                          (appkit-projection-change-create :full-p t
+                                                           :frame-p t
+                                                           :position
+                                                           'preserve)))
   (message "%s" failure))
 
 (defun misskey-notifications--handle-read-success
     (view state observation phase payload)
-  "Install notification PAYLOAD for PHASE in VIEW STATE.
-
-OBSERVATION versions canonical entity merges."
+  "Install notification PAYLOAD for PHASE in VIEW STATE.\n\nOBSERVATION versions canonical entity merges."
   (condition-case err
-      (let* ((notifications
-              (misskey-notifications--validate-list payload))
-             (current (plist-get state :items))
-             (new
-              (if (eq phase 'older)
-                  (misskey-notifications--new-items current notifications)
-                notifications))
-             (installed
-              (pcase phase
-                ('initial notifications)
-                ('refresh
-                 (append notifications
-                         (misskey-notifications--new-items
-                          notifications current)))
-                ('older (append current new)))))
+      (let*
+          ((notifications
+            (misskey-notifications--validate-list payload))
+           (current (plist-get state :items))
+           (new
+            (if (eq phase 'older)
+                (misskey-notifications--new-items current
+                                                  notifications)
+              notifications))
+           (installed
+            (pcase phase
+              ('initial notifications)
+              ('refresh
+               (append notifications
+                       (misskey-notifications--new-items notifications
+                                                         current)))
+              ('older (append current new)))))
         (dolist (notification notifications)
-          (let ((note (alist-get 'note notification))
-                (user (alist-get 'user notification)))
-            (when (and (consp note)
-                       (stringp (misskey-note-id note))
-                       (not (string-empty-p (misskey-note-id note))))
-              (misskey-merge-note-state
-               (appkit-view-app view) note observation))
-            (when (and (consp user)
-                       (stringp (misskey-user-id user))
-                       (not (string-empty-p (misskey-user-id user))))
-              (misskey-merge-user-state
-               (appkit-view-app view) user observation))))
+          (let
+              ((note (alist-get 'note notification))
+               (user (alist-get 'user notification)))
+            (when
+                (and (consp note) (stringp (misskey-note-id note))
+                     (not (string-empty-p (misskey-note-id note))))
+              (misskey-merge-note-state (appkit-surface-app view) note
+                                        observation))
+            (when
+                (and (consp user) (stringp (misskey-user-id user))
+                     (not (string-empty-p (misskey-user-id user))))
+              (misskey-merge-user-state (appkit-surface-app view) user
+                                        observation))))
         (setf (plist-get state :items) installed
               (plist-get state :phase) 'ready
               (plist-get state :message) nil
@@ -321,106 +320,125 @@ OBSERVATION versions canonical entity merges."
                  (null notifications)))
           ('older
            (setf (plist-get state :older-exhausted-p) (null new))))
-        (appkit-request-sync view :structure t :part 'directory)
+        (misskey-dispatch view
+                          (list :render
+                                (appkit-projection-change-create
+                                 :full-p t :frame-p t :position
+                                 'preserve)))
         (message "Loaded %d Misskey notifications" (length new)))
     (error
-     (misskey-notifications--handle-read-error
-      view state (error-message-string err)))))
+     (misskey-notifications--handle-read-error view state
+                                               (error-message-string
+                                                err)))))
 
 (defun misskey-notifications--request (view phase)
   "Start notification VIEW read for PHASE without marking it read."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Misskey notification phase: %S" phase))
   (let ((state (misskey-notifications--state view)))
-    (when (and (eq phase 'older)
-               (plist-get state :older-exhausted-p))
+    (when (and (eq phase 'older) (plist-get state :older-exhausted-p))
       (user-error "No older Misskey notifications available"))
-    (let ((parameters
-           (list :limit misskey-notifications-limit
-                 :markAsRead :json-false)))
+    (let
+        ((parameters
+          (list :limit misskey-notifications-limit :markAsRead
+                :json-false)))
       (when (eq phase 'older)
-        (let* ((oldest (car (last (plist-get state :items))))
-               (cursor (and oldest (alist-get 'id oldest))))
+        (let*
+            ((oldest (car (last (plist-get state :items))))
+             (cursor (and oldest (alist-get 'id oldest))))
           (unless oldest
             (user-error "The Misskey notification view has no items"))
           (unless (and (stringp cursor) (not (string-empty-p cursor)))
-            (user-error "The oldest Misskey notification has no valid ID"))
+            (user-error
+             "The oldest Misskey notification has no valid ID"))
           (setq parameters (plist-put parameters :untilId cursor))))
-      (let* ((observation (misskey-state-observe (appkit-view-app view)))
-             (operation
-              (appkit-view-operation-begin
-               view misskey-notifications--request-key)))
+      (let*
+          ((observation
+            (misskey-state-observe (appkit-surface-app view)))
+           (operation
+            (misskey-read-begin view
+                                misskey-notifications--request-key)))
         (setf (plist-get state :phase) phase
               (plist-get state :message) nil)
-        (appkit-request-sync view :structure t :part 'directory)
-        (misskey-http-read
-         "i/notifications" parameters
-         (lambda (payload)
-           (when (appkit-view-operation-finish operation)
-             (misskey-notifications--handle-read-success
-              view state observation phase payload)))
-         :errback
-         (lambda (failure)
-           (when (appkit-view-operation-finish operation)
-             (misskey-notifications--handle-read-error
-              view state failure)))
-         :account (plist-get state :account)
-         :owner operation)))))
+        (misskey-dispatch view
+                          (list :render
+                                (appkit-projection-change-create
+                                 :full-p t :frame-p t :position
+                                 'preserve)))
+        (misskey-http-read "i/notifications" parameters
+                           (lambda (payload)
+                             (when (misskey-read-finish operation)
+                               (misskey-notifications--handle-read-success
+                                view state observation phase payload)))
+                           :errback
+                           (lambda (failure)
+                             (when (misskey-read-finish operation)
+                               (misskey-notifications--handle-read-error
+                                view state failure)))
+                           :account (plist-get state :account) :owner
+                           operation)))))
 
 (defun misskey-notifications--handle-mark-success (view state ids)
   "Acknowledge notification IDS in VIEW STATE."
   (let ((acknowledged (plist-get state :acknowledged-ids)))
-    (dolist (id ids)
-      (puthash id t acknowledged)))
+    (dolist (id ids) (puthash id t acknowledged)))
   (setf (plist-get state :marking-p) nil)
-  (appkit-request-sync view :structure t :part 'directory)
+  (misskey-dispatch view
+                    (list :render
+                          (appkit-projection-change-create :full-p t
+                                                           :frame-p t
+                                                           :position
+                                                           'preserve)))
   (message "Marked all Misskey notifications read"))
 
 (defun misskey-notifications--handle-mark-error (view state failure)
   "Retire failed notification mark in VIEW STATE and report FAILURE."
   (setf (plist-get state :marking-p) nil)
-  (appkit-request-sync view :structure t :part 'directory)
+  (misskey-dispatch view
+                    (list :render
+                          (appkit-projection-change-create :full-p t
+                                                           :frame-p t
+                                                           :position
+                                                           'preserve)))
   (message "%s" failure))
 
 (defun misskey-notifications-mark-all-read ()
-  "Explicitly mark all account notifications read."
-  (interactive)
+  "Explicitly mark all account notifications read." (interactive)
   (if-let* ((view (misskey-notifications--current-view)))
       (let ((state (misskey-notifications--state view)))
         (when (plist-get state :marking-p)
-          (user-error "Notification acknowledgement is already in flight"))
-        (let* ((ids (mapcar (lambda (notification)
-                              (alist-get 'id notification))
-                            (plist-get state :items)))
-               (operation
-                (appkit-view-operation-begin
-                 view misskey-notifications--mark-key)))
+          (user-error
+           "Notification acknowledgement is already in flight"))
+        (let*
+            ((ids
+              (mapcar
+               (lambda (notification) (alist-get 'id notification))
+               (plist-get state :items)))
+             (operation
+              (misskey-read-begin view misskey-notifications--mark-key)))
           (setf (plist-get state :marking-p) t)
-          (appkit-request-sync view :structure t :part 'directory)
-          (misskey-http-post
-           "notifications/mark-all-as-read" (make-hash-table)
-           (lambda (_payload)
-             (when (appkit-view-operation-finish operation)
-               (misskey-notifications--handle-mark-success
-                view state ids)))
-           :errback
-           (lambda (failure)
-             (when (appkit-view-operation-finish operation)
-               (misskey-notifications--handle-mark-error
-                view state failure)))
-           :account (plist-get state :account)
-           :owner operation)))
+          (misskey-dispatch view
+                            (list :render
+                                  (appkit-projection-change-create
+                                   :full-p t :frame-p t :position
+                                   'preserve)))
+          (misskey-http-post "notifications/mark-all-as-read"
+                             (make-hash-table)
+                             (lambda (_payload)
+                               (when (misskey-read-finish operation)
+                                 (misskey-notifications--handle-mark-success
+                                  view state ids)))
+                             :errback
+                             (lambda (failure)
+                               (when (misskey-read-finish operation)
+                                 (misskey-notifications--handle-mark-error
+                                  view state failure)))
+                             :account (plist-get state :account)
+                             :owner operation)))
     (user-error "Current buffer is not a Misskey notification view")))
 
 (defun misskey-notifications--setup-view (view)
   "Initialize notification VIEW."
-  (with-current-buffer (appkit-view-buffer view)
-    (appkit-directory-configure
-     (appkit-directory-surface)
-     :item-inserter #'misskey-notifications--insert-item
-     :activate-function #'misskey-notifications--activate-item))
-  (appkit-invalidate view :structure t :part 'directory :position t)
-  (appkit-sync-invalidations view)
   (misskey-notifications--request view 'initial))
 
 (defun misskey-notifications-refresh ()
@@ -444,25 +462,24 @@ OBSERVATION versions canonical entity merges."
 (defun misskey-notifications (&optional account)
   "Open ACCOUNT's notification view without marking notifications read."
   (interactive)
-  (let* ((target (or account (misskey--current-account)))
-         (_token
-          (and (called-interactively-p 'interactive)
-               (misskey-auth--ensure-token target)))
-         (app (misskey-app target))
-         (id '(notifications))
-         (existing (appkit-view-for-id app id))
-         (state
-          (or (and existing (appkit-view-state existing))
-              (list :type 'notifications :account target :items nil
-                    :phase 'initial :message nil :marking-p nil
-                    :loaded-p nil :older-exhausted-p nil
-                    :acknowledged-ids (make-hash-table :test #'equal)))))
-    (appkit-open-view
-     :app app :id id :mode #'misskey-notifications-mode
-     :buffer-name "*misskey notifications*"
-     :state state :sync-function #'misskey-notifications--sync
-     :parts '(directory) :position-policy 'semantic
-     :setup #'misskey-notifications--setup-view :select t)))
+  (let*
+      ((target (or account (misskey--current-account)))
+       (_token
+        (and (called-interactively-p 'interactive)
+             (misskey-auth--ensure-token target)))
+       (app (misskey-app target)) (id '(notifications))
+       (existing (appkit-app-surface app id))
+       (state
+        (or (and existing (appkit-surface-model existing))
+            (list :type 'notifications :account target :items nil
+                  :phase 'initial :message nil :marking-p nil
+                  :loaded-p nil :older-exhausted-p nil
+                  :acknowledged-ids (make-hash-table :test #'equal)))))
+    (misskey-open-surface :app app :identity id :mode
+                          #'misskey-notifications-mode :buffer-name
+                          "*misskey notifications*" :input state
+                          :setup #'misskey-notifications--setup-view
+                          :select t)))
 
 (provide 'misskey-notifications)
 

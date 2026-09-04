@@ -88,18 +88,19 @@
     (should-error (misskey-auth--storage-source) :type 'user-error)))
 
 (ert-deftest misskey-test-helper-preserves-interactive-auth-sources ()
-  (let ((noninteractive nil)
-        (auth-sources '(password-store "~/.authinfo.gpg"))
-        (misskey-test--auth-file nil)
-        (misskey-test--original-auth-sources nil)
-        (misskey-test--auth-source-installed-p nil))
-    (misskey-test--enable-auth-source)
-    (should (equal auth-sources '(password-store "~/.authinfo.gpg")))
-    (should-not misskey-test--auth-file)
-    (should-not misskey-test--auth-source-installed-p)))
+  (let ((auth-sources '(password-store "~/.authinfo.gpg")))
+    (misskey-test-with-session
+      (should (equal (misskey--credential-user-id
+                      (misskey--stored-credential (misskey--current-account-locator)))
+                     "self"))
+      (should-error (auth-source-search :host "example.social")))
+    (should (equal auth-sources '(password-store "~/.authinfo.gpg")))))
 
 (ert-deftest misskey-auth-real-netrc-upsert-leaves-one-replacement ()
-  (let* ((file (make-temp-file "misskey-auth-upsert-"))
+  (let* ((password-data (make-hash-table :test #'equal))
+         (auth-source-netrc-cache nil)
+         (auth-source-do-cache nil)
+         (file (make-temp-file "misskey-auth-upsert-"))
          (misskey-instance-url "https://example.social")
          (misskey-auth-source-user "alice")
          (account (misskey--current-account-locator))
@@ -191,30 +192,29 @@
       (should (equal (misskey--credential-user-id new) "bob-id")))))
 
 (ert-deftest misskey-auth-replaces-live-identity-session ()
-  (let* ((account
-          (misskey--account-create
-           :origin "https://example.social" :auth-source-user "label"))
-         (old (misskey--credential-create
-               :token "OLD" :user-id "alice-id"))
-         (new (misskey--credential-create
-               :token "NEW" :user-id "bob-id"))
-         (old-key '("https://example.social" "alice-id"))
-         (old-app (appkit-app-start 'misskey :id old-key))
-         recreated)
+  (let*
+      ((account
+        (misskey--account-create :origin "https://example.social"
+                                 :auth-source-user "label"))
+       (old
+        (misskey--credential-create :token "OLD" :user-id "alice-id"))
+       (new
+        (misskey--credential-create :token "NEW" :user-id "bob-id"))
+       (old-key '("https://example.social" "alice-id"))
+       (old-app (appkit-app-start misskey--app-type :identity old-key))
+       recreated)
     (puthash old-key old-app misskey--apps)
     (unwind-protect
-        (cl-letf (((symbol-function 'misskey-app)
-                   (lambda (bound)
-                     (setq recreated bound)
-                     'new-app)))
+        (cl-letf
+            (((symbol-function 'misskey-app)
+              (lambda (bound) (setq recreated bound) 'new-app)))
           (misskey-auth--replace-session account old new)
           (should-not (appkit-app-live-p old-app))
           (should-not (gethash old-key misskey--apps))
-          (should (equal (misskey--account-remote-user-id recreated)
-                         "bob-id")))
+          (should
+           (equal (misskey--account-remote-user-id recreated) "bob-id")))
       (remhash old-key misskey--apps)
-      (when (appkit-app-live-p old-app)
-        (appkit-app-close old-app)))))
+      (when (appkit-app-live-p old-app) (appkit-app-close old-app)))))
 
 (ert-deftest misskey-public-entry-points-authorize-before-opening ()
   (let (calls)

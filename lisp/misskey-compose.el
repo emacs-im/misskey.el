@@ -12,6 +12,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-compose)
+(require 'appkit-chat-compose)
 (require 'appkit-core)
 (require 'misskey-core)
 (require 'misskey-http)
@@ -64,7 +65,7 @@
   "C-c C-a" #'misskey-compose-attach-file
   "C-c C-d" #'misskey-compose-remove-attachment)
 
-(define-derived-mode misskey-compose-mode appkit-compose-mode "Misskey-Compose"
+(define-derived-mode misskey-compose-mode appkit-chat-compose-mode "Misskey-Compose"
   "Major mode for composing a standalone Misskey note."
   (setq-local misskey-compose--request nil
               misskey-compose--submission-token nil)
@@ -97,7 +98,7 @@
 
 (defun misskey-compose--status-fields ()
   "Return generated status fields for the current note."
-  (let* ((items (appkit-compose-items))
+  (let* ((items (appkit-chat-compose-items))
          (file-count
           (cl-loop for item in items
                    sum (length (plist-get item :attachments))))
@@ -109,7 +110,7 @@
                                 misskey-compose--visibility-choices)
                      (format "%s" misskey-compose-visibility)))
            (list :label "State"
-                 :value (or (appkit-compose-progress-text) "Draft")))))
+                 :value (or (appkit-compose-status-text) "Draft")))))
     (when (> (length items) 1)
       (push (list :label "Notes" :value (format "%d" (length items)))
             fields))
@@ -135,7 +136,7 @@
 
 (defun misskey-compose--parts ()
   "Return Appkit compose parts for the current draft."
-  (let* ((items (appkit-compose-items))
+  (let* ((items (appkit-chat-compose-items))
          (total (length items))
          (index 0))
     (mapcar
@@ -149,7 +150,7 @@
 (defun misskey-compose--footer ()
   "Return the generated compose command footer."
   (propertize
-   (if (appkit-compose-submitting-p)
+   (if (appkit-compose-operation-active-p)
        "Publishing; wait for the server response"
      (concat "C-c C-c publish   C-c C-v visibility   "
              "C-c C-a attach   C-c C-d detach\n"
@@ -158,7 +159,7 @@
 
 (defun misskey-compose--refresh ()
   "Refresh generated compose presentation for the current buffer."
-  (appkit-compose-refresh))
+  (appkit-chat-compose-refresh))
 
 (cl-defun misskey-compose-open
     (&optional account &key reply-id renote-id target-label
@@ -183,8 +184,8 @@ exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
     (setq-local misskey-compose-reply-id reply-id)
     (setq-local misskey-compose-renote-id renote-id)
     (setq-local misskey-compose-target-label target-label)
-    (appkit-compose-setup
-     :app (ignore-errors (misskey-app target))
+    (appkit-chat-compose-setup
+     :app (misskey-app target)
      :context-function #'misskey-compose--context
      :status-fields-function #'misskey-compose--status-fields
      :parts-function #'misskey-compose--parts
@@ -222,15 +223,15 @@ exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
        (unless (or attachments (string-match-p "[^[:space:]]" text))
          (user-error "Each note needs text or an attachment"))
        copy))
-   (appkit-compose-items)))
+   (appkit-chat-compose-items)))
 
 (defun misskey-compose-attach-file (file)
   "Attach readable FILE to the current Misskey compose part."
   (interactive "fAttach file: ")
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
   (let* ((path (expand-file-name file))
-         (item (appkit-compose-current-item))
+         (item (appkit-chat-compose-current-item))
          (attachments (copy-sequence (plist-get item :attachments))))
     (when (file-remote-p path)
       (user-error "Remote attachment paths are unsupported: %s" path))
@@ -248,7 +249,7 @@ exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
           (plist-put
            item :attachments
            (append attachments (list (list :path path)))))
-    (appkit-compose-update-current-item item)
+    (appkit-chat-compose-update-current-item item)
     (set-buffer-modified-p t)
     (message "Attached %s" (file-name-nondirectory path))))
 
@@ -257,9 +258,9 @@ exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
 
 Interactively, select one of the current part's attachments."
   (interactive)
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
-  (let* ((item (appkit-compose-current-item))
+  (let* ((item (appkit-chat-compose-current-item))
          (attachments (plist-get item :attachments))
          (paths (mapcar (lambda (attachment)
                           (plist-get attachment :path))
@@ -278,7 +279,7 @@ Interactively, select one of the current part's attachments."
                       :key (lambda (attachment)
                              (plist-get attachment :path))
                       :test #'equal)))
-    (appkit-compose-update-current-item item)
+    (appkit-chat-compose-update-current-item item)
     (set-buffer-modified-p t)
     (message "Detached %s" (file-name-nondirectory target))))
 
@@ -304,8 +305,8 @@ Interactively, select one of the current part's attachments."
   (and (buffer-live-p buffer)
        (with-current-buffer buffer
          (and (eq misskey-compose--submission-token token)
-              (appkit-view-live-p (car token))
-              (eq (appkit-current-view) (car token))))))
+              (appkit-surface-live-p (car token))
+              (eq (appkit-current-surface) (car token))))))
 
 (defun misskey-compose--accept-callback (buffer token)
   "Accept a callback for BUFFER and TOKEN, clearing its completed request."
@@ -329,7 +330,7 @@ Interactively, select one of the current part's attachments."
     (with-current-buffer buffer
       (setq-local misskey-compose--submission-token nil
                   misskey-compose--request nil)
-      (appkit-compose-finish-submit)
+      (appkit-compose-operation-finish (appkit-compose-operation-owner))
       (misskey-compose--unlock-bodies)
       (misskey-compose--refresh))
     (message "%s" failure))
@@ -357,7 +358,7 @@ Interactively, select one of the current part's attachments."
         (misskey-http-cancel request))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
-          (appkit-compose-finish-submit)
+          (appkit-compose-operation-finish (appkit-compose-operation-owner))
           (misskey-compose--unlock-bodies)
           (misskey-compose--refresh))))))
 
@@ -383,8 +384,8 @@ Interactively, select one of the current part's attachments."
   "Update BUFFER's compose submit from LABEL and PROGRESS."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (appkit-compose-submitting-p)
-        (apply #'appkit-compose-update-submit
+      (when (appkit-compose-operation-active-p)
+        (apply #'appkit-compose-operation-update (appkit-compose-operation-owner)
                (append (and label-p (list :label label))
                        (and progress-p (list :progress progress))))
         (misskey-compose--refresh)))))
@@ -408,7 +409,7 @@ Interactively, select one of the current part's attachments."
   (when (misskey-compose--submission-current-p buffer token)
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
-        (appkit-compose-set-items items)
+        (appkit-chat-compose-set-items items)
         (set-buffer-modified-p t)))))
 
 (defun misskey-compose--persist-confirmed
@@ -604,7 +605,7 @@ BUFFER's NOTE-INDEX selects the draft entry."
 
 Interactively, choose `public', `home', or `followers'."
   (interactive)
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
   (let* ((choices misskey-compose--visibility-choices)
          (label
@@ -619,69 +620,65 @@ Interactively, choose `public', `home', or `followers'."
     (misskey-compose--refresh)
     (set-buffer-modified-p t)
     choice))
+
 (defun misskey-compose-add-note ()
   "Insert an empty note after the current draft item."
   (interactive)
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
-  (appkit-compose-add-item)
+  (appkit-chat-compose-add-item)
   (set-buffer-modified-p t))
 
 (defun misskey-compose-remove-note ()
   "Remove the current extra note from the draft."
   (interactive)
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
-  (unless (> (length (appkit-compose-items)) 1)
+  (unless (> (length (appkit-chat-compose-items)) 1)
     (user-error "The draft already has only one note"))
-  (let ((index (or (appkit-compose-current-part-index) 0)))
-    (appkit-compose-drop-item index)
+  (let ((index (or (appkit-chat-compose-current-part-index) 0)))
+    (appkit-chat-compose-drop-item index)
     (set-buffer-modified-p t)
     (message "Removed note %d." (1+ index))))
 
 (defun misskey-compose-send ()
-  "Publish the current Misskey draft once.
-
-Local attachments upload to Drive before their note is created.  Successful
-uploads and confirmed note prefixes are persisted immediately, so retries
-reuse Drive files and never recreate confirmed notes."
+  "Publish the current Misskey draft once.\n\nLocal attachments upload to Drive before their note is created.  Successful\nuploads and confirmed note prefixes are persisted immediately, so retries\nreuse Drive files and never recreate confirmed notes."
   (interactive)
-  (when (appkit-compose-submitting-p)
+  (when (appkit-compose-operation-active-p)
     (user-error "This note is already being published"))
-  (let* ((items (misskey-compose--snapshot-items))
-         (buffer (current-buffer))
-         (account (misskey-compose--account))
-         (owner (appkit-current-view))
-         (token (cons owner buffer))
-         (label (if (> (length items) 1)
-                    "Publishing Misskey notes..."
-                  "Publishing Misskey note...")))
-    (unless (appkit-view-live-p owner)
+  (let*
+      ((items (misskey-compose--snapshot-items))
+       (buffer (current-buffer)) (account (misskey-compose--account))
+       (owner (appkit-current-surface)) (token (cons owner buffer))
+       (label
+        (if (> (length items) 1) "Publishing Misskey notes..."
+          "Publishing Misskey note...")))
+    (unless (appkit-surface-live-p owner)
       (error "Misskey compose has no live lifecycle owner"))
     (setq-local misskey-compose--submission-token token
                 misskey-compose--request nil)
-    (appkit-compose-begin-submit
-     :label label
-     :cancel-function
-     (lambda () (misskey-compose--abort-submission buffer token)))
-    (misskey-compose--refresh)
-    (misskey-compose--lock-bodies)
+    (appkit-compose-operation-begin 'publish :label label :cancel-function
+                                    (lambda ()
+                                      (misskey-compose--abort-submission
+                                       buffer token)))
+    (misskey-compose--refresh) (misskey-compose--lock-bodies)
     (message "%s" label)
     (condition-case err
-        (misskey-compose--send-next
-         buffer account
-         (list :items items :index 0 :previous-id nil
-               :visibility misskey-compose-visibility
-               :reply-id misskey-compose-reply-id
-               :renote-id misskey-compose-renote-id
-               :owner owner :token token))
+        (misskey-compose--send-next buffer account
+                                    (list :items items :index 0
+                                          :previous-id nil :visibility
+                                          misskey-compose-visibility
+                                          :reply-id
+                                          misskey-compose-reply-id
+                                          :renote-id
+                                          misskey-compose-renote-id
+                                          :owner owner :token token))
       ((error quit)
        (when (misskey-compose--submission-current-p buffer token)
          (setq-local misskey-compose--submission-token nil
                      misskey-compose--request nil)
-         (appkit-compose-finish-submit)
-         (misskey-compose--unlock-bodies)
-         (misskey-compose--refresh))
+         (appkit-compose-operation-finish (appkit-compose-operation-owner))
+         (misskey-compose--unlock-bodies) (misskey-compose--refresh))
        (signal (car err) (cdr err))))))
 
 (defun misskey-compose--note-at-point ()
@@ -692,40 +689,40 @@ reuse Drive files and never recreate confirmed notes."
 (defun misskey-compose-reply-at-point ()
   "Open a reply draft for the displayed Misskey note at point."
   (interactive)
-  (let* ((raw-note (misskey-compose--note-at-point))
-         (note (misskey-note-display-note raw-note))
-         (view (appkit-current-view))
-         (account (and (appkit-view-live-p view)
-                       (plist-get (appkit-view-state view) :account))))
+  (let*
+      ((raw-note (misskey-compose--note-at-point))
+       (note (misskey-note-display-note raw-note))
+       (view (appkit-current-surface))
+       (account
+        (and (appkit-surface-live-p view)
+             (plist-get (appkit-surface-model view) :account))))
     (unless note
       (user-error "The displayed Misskey note was deleted"))
-    (misskey-compose-open
-     account
-     :reply-id (misskey-note-id note)
-     :target-label
-     (misskey-user-label (misskey-note-user note)))))
+    (misskey-compose-open account :reply-id (misskey-note-id note)
+                          :target-label
+                          (misskey-user-label (misskey-note-user note)))))
 
 (defun misskey-compose-quote-at-point ()
   "Open a quote draft for the displayed Misskey note at point."
   (interactive)
-  (let* ((raw-note (misskey-compose--note-at-point))
-         (note (misskey-note-display-note raw-note))
-         (view (appkit-current-view))
-         (account (and (appkit-view-live-p view)
-                       (plist-get (appkit-view-state view) :account))))
+  (let*
+      ((raw-note (misskey-compose--note-at-point))
+       (note (misskey-note-display-note raw-note))
+       (view (appkit-current-surface))
+       (account
+        (and (appkit-surface-live-p view)
+             (plist-get (appkit-surface-model view) :account))))
     (unless note
       (user-error "The displayed Misskey note was deleted"))
-    (misskey-compose-open
-     account
-     :renote-id (misskey-note-id note)
-     :target-label
-     (misskey-user-label (misskey-note-user note)))))
+    (misskey-compose-open account :renote-id (misskey-note-id note)
+                          :target-label
+                          (misskey-user-label (misskey-note-user note)))))
 
 (defun misskey-compose-cancel ()
   "Cancel the active request, if any, and kill the current draft."
   (interactive)
-  (when (appkit-compose-submitting-p)
-    (appkit-compose-cancel-submit))
+  (when (appkit-compose-operation-active-p)
+    (appkit-compose-cancel-operation))
   (kill-buffer (current-buffer)))
 
 (provide 'misskey-compose)

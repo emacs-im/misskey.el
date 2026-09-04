@@ -14,12 +14,14 @@
 - Added notifications with stable identities, explicit `markAsRead: false` reads, older-page loading, activation of referenced notes or users, and `M` as the only remote mark-all-read action.
 - Added one contextual action path for reactions, favorites, pure renotes, note deletion, follow, and unfollow, with account-scoped state overrides and dependency-driven invalidation across every live view.
 - Added lifecycle-owned presentation for every Drive attachment through Appkit, including guarded sensitive media, original-resource open actions, and MIME-filtered avatar/image/video preview caching.
+- Migrated Misskey sessions and generated hosts to canonical Appkit Apps, Surfaces, and Effects. Media acquisition now commits before presentation, rejects superseded or closed-host results, and isolates disk caches by account while retaining targeted projection updates and semantic positions.
 - Added authenticated JSON and streaming multipart curl transports with redirects and retries disabled, raw response and diagnostic byte caps, strict bearer validation, Appkit-owned cancellation, token redaction, and unknown-outcome reporting for every post-dispatch write failure.
 - Added Drive upload progress on the compose submit status strip, measured from curl's upload meter without loading the file into Emacs.
 
 ### Fixed
 
 - Compose uses Appkit's chatbuf surface: generated context, status, attachment rows, and committed parts no longer share the editable input region.
+- Persisting completed uploads and confirmed thread parts no longer cancels the active publication operation.
 - Successful Drive uploads remain attached to a failed draft, avoiding duplicate uploads on a deliberate retry of note creation.
 - Browsing or paging a notification view never implicitly acknowledges remote notifications.
 - Note views keep timestamps at the live window's right edge, elide long author headings in narrow windows, and restore the complete heading after widening.

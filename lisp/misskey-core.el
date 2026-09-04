@@ -10,13 +10,17 @@
 
 ;;; Code:
 
+(require 'appkit-effect)
+(require 'appkit-command)
+(require 'appkit-surface)
+(require 'appkit-app)
 (require 'cl-lib)
 (require 'auth-source)
 (require 'subr-x)
 (require 'json)
 (require 'url-parse)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 
 (defgroup misskey nil
   "Use Misskey-compatible servers from Emacs."
@@ -53,29 +57,26 @@ label is not account identity and need not equal the Misskey username."
   token
   user-id)
 
-(cl-defstruct (misskey--session
-               (:constructor misskey--session-create))
-  "State owned by one Misskey application session."
-  account
-  timeline-states
-  revision
-  note-overrides
-  note-revisions
-  user-overrides
-  user-revisions)
+(cl-defstruct
+    (misskey--session (:constructor misskey--session-create))
+  "State owned by one Misskey application session." account
+  timeline-states revision note-overrides note-revisions
+  user-overrides user-revisions requests resources address)
 
 (defun misskey--make-session (account)
   "Return initialized application state for ACCOUNT."
-  (misskey--session-create
-   :account account
-   :timeline-states (make-hash-table :test #'eq)
-   :revision 0
-   :note-overrides (make-hash-table :test #'equal)
-   :note-revisions (make-hash-table :test #'equal)
-   :user-overrides (make-hash-table :test #'equal)
-   :user-revisions (make-hash-table :test #'equal)))
-
-(appkit-define-app-kind misskey)
+  (misskey--session-create :account account :timeline-states
+                           (make-hash-table :test #'eq) :revision 0
+                           :note-overrides
+                           (make-hash-table :test #'equal)
+                           :note-revisions
+                           (make-hash-table :test #'equal)
+                           :user-overrides
+                           (make-hash-table :test #'equal)
+                           :user-revisions
+                           (make-hash-table :test #'equal) :requests
+                           (make-hash-table :test #'equal) :resources
+                           (make-hash-table :test #'equal)))
 
 (defvar misskey--apps (make-hash-table :test #'equal)
   "Live Appkit sessions keyed by Misskey account.")
@@ -247,13 +248,13 @@ records."
     (unless (appkit-app-live-p app)
       (setq app
             (appkit-app-start
-             'misskey :id key :state (misskey--make-session target)))
+             misskey--app-type :identity key :input (misskey--make-session target)))
       (puthash key app misskey--apps))
     app))
 
 (defun misskey--session (app)
   "Return validated application state owned by APP."
-  (let ((state (and (appkit-app-p app) (appkit-app-state app))))
+  (let ((state (and (appkit-app-p app) (appkit-app-model app))))
     (unless (misskey--session-p state)
       (error "Invalid Misskey application session"))
     state))
@@ -290,14 +291,19 @@ records."
     (error "Misskey state updates must be property-value pairs")))
 
 (defun misskey-invalidate-resource (app resource)
-  "Invalidate RESOURCE in every live view owned by APP."
-  (unless (appkit-app-live-p app)
-    (error "Cannot invalidate a dead Misskey application"))
+  "Request targeted resource redraws in APP's live hosts."
   (maphash
-   (lambda (_id view)
-     (when (appkit-view-live-p view)
-       (appkit-request-sync view :resource resource :position t)))
-   (appkit-app-view-registry app)))
+   (lambda (_identity entry)
+     (let ((surface (cdr entry)))
+       (when (appkit-surface-live-p surface)
+         (misskey-dispatch surface
+                           (list :render
+                                 (appkit-projection-change-create
+                                  :resources (list resource) :position
+                                  'preserve :full-p
+                                  (eq (car-safe resource) :note)
+                                  :frame-p t))))))
+   (appkit-app-surfaces app)))
 
 (defun misskey--record-state-values
     (app table revisions id resource properties)
@@ -460,6 +466,244 @@ Missing wire keys do not alter state; an explicitly present nil value does."
     (clrhash misskey--apps)
     (when first-error
       (signal (car first-error) (cdr first-error)))))
+
+(defconst misskey--app-type
+  (appkit-app-type-create :name 'misskey :init
+                          (lambda (context input)
+                            (when (misskey--session-p input)
+                              (setf (misskey--session-address input)
+                                    (appkit-transition-context-owner-address
+                                     context)))
+                            (appkit-next :model input :render
+                                         appkit-render-none))
+                          :update #'misskey-app-update))
+
+(defun misskey-request-table (app)
+  "Return APP's account-local mutation lanes."
+  (misskey--session-requests (misskey--session app)))
+
+(defun misskey-resource-store (app)
+  "Return APP's account-local preview resources."
+  (misskey--session-resources (misskey--session app)))
+
+(cl-defstruct (misskey-read-token (:constructor misskey-read-token-create))
+  surface key live-p)
+
+(defvar-local misskey--reads nil
+  "Active domain read transactions in this host.")
+
+(defun misskey-read-begin (surface key)
+  "Replace the domain read at KEY in SURFACE."
+  (misskey-read-cancel surface key)
+  (let ((token (misskey-read-token-create :surface surface :key key :live-p t)))
+    (with-current-buffer (appkit-surface-buffer surface)
+      (push token misskey--reads))
+    token))
+
+(defun misskey-read-current-p (token)
+  "Whether TOKEN can still install its response."
+  (and (misskey-read-token-live-p token)
+       (appkit-surface-live-p (misskey-read-token-surface token))))
+
+(defun misskey-read-finish (token)
+  "Accept TOKEN's terminal response once."
+  (when (misskey-read-current-p token)
+    (setf (misskey-read-token-live-p token) nil)
+    (with-current-buffer (appkit-surface-buffer (misskey-read-token-surface token))
+      (setq misskey--reads (delq token misskey--reads)))
+    t))
+
+(defun misskey-read-cancel (surface key)
+  "Cancel SURFACE's current read transaction at KEY."
+  (when (appkit-surface-live-p surface)
+    (with-current-buffer (appkit-surface-buffer surface)
+      (when-let*
+          ((token
+            (cl-find key misskey--reads :key #'misskey-read-token-key
+                     :test #'equal)))
+        (misskey-read-finish token)
+        (misskey-dispatch surface (list :cancel-read key)) t))))
+
+(defun misskey-surface--update (_context model message)
+  "Accept a host intent against committed MODEL."
+  (pcase message
+    (`(:render ,change) (appkit-next :model model :render change))
+    (`(:replace-model ,replacement)
+     (setq replacement
+           (plist-put replacement :address (plist-get model :address)))
+     (setq replacement (plist-put replacement :media-intent nil))
+     (appkit-next :model replacement :render appkit-render-none
+                  :commands
+                  (list
+                   (appkit-command-cancel-effect
+                    'misskey-media-acquire)
+                   (appkit-command-cancel-effect
+                    'misskey-media-present))))
+    (`(:cancel-read ,key)
+     (appkit-next :model model :render appkit-render-none :commands
+                  (list (appkit-command-cancel-effect key))))
+    (`(:read-effect ,effect)
+     (appkit-next :model model :render appkit-render-none :commands
+                  (list (appkit-command-start-effect effect))))
+    (`(:read-delivered ,token ,callback ,payload)
+     (when (misskey-read-current-p token) (funcall callback payload))
+     (appkit-next :model model :render appkit-render-none))
+    (_ (misskey-media-update model message))))
+
+(cl-defun misskey-open-surface
+    (&key app identity mode buffer-name input setup select)
+  "Open or focus one canonical Misskey host at IDENTITY."
+  (or
+   (when-let* ((existing (appkit-app-surface app identity)))
+     (when select (pop-to-buffer (appkit-surface-buffer existing)))
+     existing)
+   (let
+       ((surface
+         (appkit-open-generated-surface
+          (appkit-surface-type-create :name mode :mode mode :init
+                                      (lambda (context state)
+                                        (setq state
+                                              (plist-put state
+                                                         :address
+                                                         (appkit-transition-context-owner-address
+                                                          context)))
+                                        (appkit-next :model state
+                                                     :render
+                                                     (appkit-projection-change-create
+                                                      :full-p t
+                                                      :frame-p t
+                                                      :position 'first)))
+                                      :update #'misskey-surface-update
+                                      :renderer-factory
+                                      #'misskey-renderer-create)
+          :app app :identity identity :input input :buffer-name
+          buffer-name :select select)))
+     (when setup (funcall setup surface)) surface)))
+
+(defun misskey-renderer-create (surface)
+  "Create the native Renderer for SURFACE's host type."
+  (if
+      (memq (appkit-surface-type-mode (appkit-surface-type surface))
+            '(misskey-directory-mode misskey-notifications-mode))
+      (appkit-generated-renderer-create :mount
+                                        (lambda (host _app _model)
+                                          (if
+                                              (eq
+                                               (appkit-surface-type-mode
+                                                (appkit-surface-type
+                                                 host))
+                                               'misskey-directory-mode)
+                                              (appkit-directory-configure
+                                               (appkit-directory-surface)
+                                               :item-inserter
+                                               #'misskey-directory--insert-user
+                                               :activate-function
+                                               #'misskey-directory--activate-user)
+                                            (appkit-directory-configure
+                                             (appkit-directory-surface)
+                                             :item-inserter
+                                             #'misskey-notifications--insert-item
+                                             :activate-function
+                                             #'misskey-notifications--activate-item)))
+                                        :merge
+                                        #'appkit-projection-change-merge
+                                        :render
+                                        (lambda
+                                          (host _app model _change)
+                                          (appkit-directory-reconcile
+                                           (appkit-directory-surface)
+                                           (if
+                                               (eq
+                                                (plist-get model :type)
+                                                'relationship-directory)
+                                               (misskey-directory--project
+                                                host model)
+                                             (misskey-notifications--project
+                                              model)))
+                                          nil)
+                                        :unmount #'ignore)
+    (appkit-projection-renderer-create :project-all
+                                       (lambda (host _app model)
+                                         (if
+                                             (eq
+                                              (plist-get model :type)
+                                              'thread)
+                                             (misskey-thread--project
+                                              model
+                                              (appkit-surface-app host))
+                                           (misskey-render-project-notes
+                                            (plist-get model :items)
+                                            (appkit-surface-app host))))
+                                       :project-frame
+                                       #'misskey-render-frame :printer
+                                       (lambda (_host _app row)
+                                         (misskey-render-insert-row
+                                          row))
+                                       :anchor-property
+                                       appkit-discussion-key-property
+                                       :no-separator-p t)))
+
+(defun misskey-render-frame (_surface _app state)
+  "Project STATE's host-specific frame and media failure."
+  (let* ((frame
+          (pcase (plist-get state :type)
+            ('timeline
+             (cons (misskey-timeline--frame state)
+                   (concat "\ng refresh   TAB next timeline   n/p note   "
+                           (if (plist-get state :older-exhausted-p) "older exhausted" "N older")
+                           "   RET reveal CW   c compose\n")))
+            ('thread
+             (cons (misskey-thread--frame state)
+                   (concat "\ng refresh   n/p note   RET reveal CW"
+                           (if (plist-get state :replies-exhausted-p) "   replies exhausted\n" "   N more replies\n"))))
+            (_ (cons (misskey-feed--generated-text state :header-function #'misskey-feed-default-header)
+                     (misskey-feed--generated-text state :footer-function #'misskey-feed-default-footer)))))
+         (failure (plist-get state :media-error)))
+    (if failure (cons (concat (car frame) "\nMedia: " failure "\n") (cdr frame)) frame)))
+
+(defun misskey-app--update (_context model message)
+  "Commit account-owned preview acquisition results."
+  (pcase message
+    (`(:preview-effect ,effect)
+     (appkit-next :model model :render appkit-render-none :commands
+                  (list (appkit-command-start-effect effect))))
+    (`(:preview-settled ,app ,key ,entry ,file)
+     (misskey-media--finish-resource app key entry file)
+     (appkit-next :model model :render appkit-render-none))
+    (_ (appkit-next :model model :render appkit-render-none))))
+
+(defvar misskey--transition-context nil
+  "Current Misskey transition's routing capabilities.")
+(defvar misskey--transition-commands nil
+  "Closed commands produced by nested Misskey domain handlers.")
+
+(defun misskey-dispatch (owner message)
+  "Deliver MESSAGE to OWNER, returning a closed post during a transition."
+  (if misskey--transition-context
+      (let ((address (if (appkit-surface-p owner)
+                         (plist-get (appkit-surface-model owner) :address)
+                       (misskey--session-address (appkit-app-model owner)))))
+        (push (appkit-command-post-message :target address :message message :delivery 'report)
+              misskey--transition-commands))
+    (if (appkit-surface-p owner)
+        (appkit-surface-send owner message)
+      (appkit-app-send owner message))))
+
+(defun misskey-surface-update (context model message)
+  "Serialize domain handlers and their closed follow-on commands."
+  (let* ((misskey--transition-context context)
+         (misskey--transition-commands nil)
+         (next (misskey-surface--update context model message)))
+    (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
+                 :commands (append (appkit-next-commands next) (nreverse misskey--transition-commands)))))
+
+(defun misskey-app-update (context model message)
+  "Serialize account results and their closed host updates."
+  (let* ((misskey--transition-context context)
+         (misskey--transition-commands nil)
+         (next (misskey-app--update context model message)))
+    (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
+                 :commands (append (appkit-next-commands next) (nreverse misskey--transition-commands)))))
 
 (provide 'misskey-core)
 

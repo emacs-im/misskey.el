@@ -16,7 +16,7 @@
 (require 'time-date)
 (require 'appkit-core)
 (require 'appkit-discussion)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-projection)
 (require 'appkit-ui)
 (require 'appkit-presentation)
@@ -30,9 +30,10 @@
 
 (defun misskey-render--revealed-content (view)
   "Return VIEW's content-warning reveal table."
-  (let ((table (and (appkit-view-live-p view)
-                    (plist-get (appkit-view-state view)
-                               :revealed-content))))
+  (let
+      ((table
+        (and (appkit-surface-live-p view)
+             (plist-get (appkit-surface-model view) :revealed-content))))
     (unless (hash-table-p table)
       (error "Misskey note view has no content-warning state"))
     table))
@@ -154,27 +155,30 @@
 (defun misskey-render--insert-body
     (view note revealed prefix properties)
   "Insert NOTE body for VIEW using REVEALED, PREFIX, and PROPERTIES."
-  (let* ((primary (misskey-note-display-note note))
-         (candidate (misskey-note-quoted-note note))
-         (app (appkit-view-app view))
-         (quoted (and candidate
-                      (not (misskey-note-deleted-p app candidate))
-                      candidate)))
+  (let*
+      ((primary (misskey-note-display-note note))
+       (candidate (misskey-note-quoted-note note))
+       (app (appkit-surface-app view))
+       (quoted
+        (and candidate (not (misskey-note-deleted-p app candidate))
+             candidate)))
     (when primary
-      (misskey-render--insert-content
-       primary revealed prefix properties)
-      (misskey-media-insert-note-files
-       view primary revealed prefix properties))
+      (misskey-render--insert-content primary revealed prefix
+                                      properties)
+      (misskey-media-insert-note-files view primary revealed prefix
+                                       properties))
     (when quoted
-      (appkit-ui-insert-prefixed-lines
-       prefix
-       (concat "Quoting "
-               (misskey-render--user-label (misskey-note-user quoted)))
-       :face 'shadow :properties properties)
-      (misskey-render--insert-content
-       quoted revealed prefix properties)
-      (misskey-media-insert-note-files
-       view quoted revealed prefix properties))))
+      (appkit-ui-insert-prefixed-lines prefix
+                                       (concat "Quoting "
+                                               (misskey-render--user-label
+                                                (misskey-note-user
+                                                 quoted)))
+                                       :face 'shadow :properties
+                                       properties)
+      (misskey-render--insert-content quoted revealed prefix
+                                      properties)
+      (misskey-media-insert-note-files view quoted revealed prefix
+                                       properties))))
 
 (defun misskey-render-note-properties (note)
   "Return durable row properties for NOTE.
@@ -185,53 +189,62 @@ User properties belong only to the visible span naming that user."
 
 (cl-defun misskey-render-note-entry
     (view note &key parent-key (depth 0) connector)
-  "Return an Appkit discussion entry rendering NOTE in VIEW.
-
-PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
-  (unless (appkit-view-live-p view)
+  "Return an Appkit discussion entry rendering NOTE in VIEW.\n\nPARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
+  (unless (appkit-surface-live-p view)
     (error "Cannot render a Misskey note into a dead view"))
-  (let* ((key (misskey-note-id note))
-         (revealed (misskey-render-revealed-p view key))
-         (avatar-p (misskey-media-avatars-enabled-p))
-         (properties (misskey-render-note-properties note)))
-    (appkit-discussion-entry-create
-     :key key
-     :parent-key parent-key
-     :depth depth
-     :connector connector
-     :avatar (and avatar-p
-                  (misskey-media-avatar-image view note))
-     :avatar-fallback "@"
-     :context
-     (and (misskey-note-pure-renote-p note)
-          (concat "renoted by "
-                  (misskey-render--user-label (misskey-note-user note))))
-     :context-face 'shadow
-     :heading-inserter (lambda () (misskey-render--insert-heading note))
-     :heading-face 'bold
-     :time (misskey-render-time (misskey-note-display-note note))
-     :body-inserter
-     (lambda (prefix row-properties)
-       (misskey-render--insert-body
-        view note revealed prefix row-properties))
-     :footer (misskey-render-footer note (appkit-view-app view))
-     :properties properties)))
+  (let*
+      ((key (misskey-note-id note))
+       (revealed (misskey-render-revealed-p view key))
+       (avatar-p (misskey-media-avatars-enabled-p))
+       (properties (misskey-render-note-properties note)))
+    (appkit-discussion-entry-create :key key :parent-key parent-key
+                                    :depth depth :connector connector
+                                    :avatar
+                                    (and avatar-p
+                                         (misskey-media-avatar-image
+                                          view note))
+                                    :avatar-fallback "@" :context
+                                    (and
+                                     (misskey-note-pure-renote-p note)
+                                     (concat "renoted by "
+                                             (misskey-render--user-label
+                                              (misskey-note-user note))))
+                                    :context-face 'shadow
+                                    :heading-inserter
+                                    (lambda ()
+                                      (misskey-render--insert-heading
+                                       note))
+                                    :heading-face 'bold :time
+                                    (misskey-render-time
+                                     (misskey-note-display-note note))
+                                    :body-inserter
+                                    (lambda (prefix row-properties)
+                                      (misskey-render--insert-body
+                                       view note revealed prefix
+                                       row-properties))
+                                    :footer
+                                    (misskey-render-footer note
+                                                           (appkit-surface-app
+                                                            view))
+                                    :properties properties)))
 
 (defun misskey-render-insert-row (row)
   "Insert one projected Misskey note ROW at point."
-  (let ((view (appkit-current-view))
-        (context (appkit-projection-row-context row)))
-    (unless (appkit-view-live-p view)
+  (let
+      ((view (appkit-current-surface))
+       (context (appkit-projection-row-context row)))
+    (unless (appkit-surface-live-p view)
       (error "No live Appkit view while rendering a Misskey note"))
     (appkit-discussion-insert-entry
-     (misskey-render-note-entry
-      view
-      (appkit-projection-row-payload row)
-      :parent-key (plist-get context :parent-key)
-      :depth (or (plist-get context :depth) 0)
-      :connector (plist-get context :connector))
-     :width (misskey-render-width)
-     :avatar-p (misskey-media-avatars-enabled-p))))
+     (misskey-render-note-entry view
+                                (appkit-projection-row-payload row)
+                                :parent-key
+                                (plist-get context :parent-key) :depth
+                                (or (plist-get context :depth) 0)
+                                :connector
+                                (plist-get context :connector))
+     :width (misskey-render-width) :avatar-p
+     (misskey-media-avatars-enabled-p))))
 
 (defun misskey-render-project-notes (notes &optional app)
   "Project visible NOTES into stable dependency-indexed Appkit rows.
@@ -259,21 +272,28 @@ targets, and pure wrappers whose target payload is absent."
 (defun misskey-render-toggle-content-warning ()
   "Toggle guarded content for the Misskey note at point."
   (interactive)
-  (let* ((view (appkit-current-view))
-         (note (and (appkit-view-live-p view)
-                    (misskey-render-note-at-point)))
-         (key (and note (misskey-note-id note))))
-    (unless (and key
-                 (or (misskey-note-content-warning-p note)
-                     (misskey-note-sensitive-media-p note)))
+  (let*
+      ((view (appkit-current-surface))
+       (note
+        (and (appkit-surface-live-p view)
+             (misskey-render-note-at-point)))
+       (key (and note (misskey-note-id note))))
+    (unless
+        (and key
+             (or (misskey-note-content-warning-p note)
+                 (misskey-note-sensitive-media-p note)))
       (user-error "Current note has no guarded content"))
     (let ((revealed (misskey-render--revealed-content view)))
-      (if (gethash key revealed)
-          (remhash key revealed)
+      (if (gethash key revealed) (remhash key revealed)
         (puthash key t revealed)
         (misskey-media-prefetch-notes view (list note)))
-      (appkit-view-enqueue-event view (list :position key))
-      (appkit-request-sync view :entry key :position t))))
+      (misskey-dispatch view
+                        (list :render
+                              (appkit-projection-change-create :keys
+                                                               (list
+                                                                key)
+                                                               :position
+                                                               key))))))
 
 (provide 'misskey-render)
 

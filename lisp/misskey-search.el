@@ -86,36 +86,32 @@
 
 ;;;###autoload
 (defun misskey-search (query &optional account)
-  "Search Misskey notes for QUERY under ACCOUNT.
-
-Each invocation creates a fresh view whose pagination is independent of every
-other search and timeline.  ACCOUNT defaults to current customization."
+  "Search Misskey notes for QUERY under ACCOUNT.\n\nEach invocation creates a fresh view whose pagination is independent of every\nother search and timeline.  ACCOUNT defaults to current customization."
   (interactive "sSearch Misskey notes: ")
-  (unless (and (stringp query)
-               (string-match-p "[^[:space:]]" query))
+  (unless (and (stringp query) (string-match-p "[^[:space:]]" query))
     (user-error "Misskey search query cannot be empty"))
-  (let* ((target (or account (misskey--current-account)))
-         (_token
-          (and (called-interactively-p 'interactive)
-               (misskey-auth--ensure-token target)))
-         (serial (cl-incf misskey-search--serial))
-         (state
-          (misskey-feed-make-state
-           :type 'search :account target
-           :title (format "Search: %s" query)
-           :endpoint "notes/search" :parameters (list :query query)
-           :limit misskey-search-limit
-           :footer-function #'misskey-search--footer
-           :empty-message "No matching notes.")))
+  (let*
+      ((target (or account (misskey--current-account)))
+       (_token
+        (and (called-interactively-p 'interactive)
+             (misskey-auth--ensure-token target)))
+       (serial (cl-incf misskey-search--serial))
+       (state
+        (misskey-feed-make-state :type 'search :account target :title
+                                 (format "Search: %s" query) :endpoint
+                                 "notes/search" :parameters
+                                 (list :query query) :limit
+                                 misskey-search-limit :footer-function
+                                 #'misskey-search--footer
+                                 :empty-message "No matching notes.")))
     (setf (plist-get state :query) query)
-    (appkit-open-view
-     :app (misskey-app target)
-     :id (list 'search serial)
-     :mode #'misskey-search-mode
-     :buffer-name (format "*misskey search %d: %s*" serial query)
-     :state state :sync-function #'misskey-feed-sync
-     :parts '(frame entries) :position-policy 'semantic
-     :setup #'misskey-search--setup-view :select t)))
+    (misskey-open-surface :app (misskey-app target) :identity
+                          (list 'search serial) :mode
+                          #'misskey-search-mode :buffer-name
+                          (format "*misskey search %d: %s*" serial
+                                  query)
+                          :input state :setup
+                          #'misskey-search--setup-view :select t)))
 
 (provide 'misskey-search)
 

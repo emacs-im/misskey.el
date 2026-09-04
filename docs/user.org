@@ -84,6 +84,11 @@ visible and actionable.  Audio, PDF, archives, and other generic
 files open their original HTTPS resource.  Text renders first.
 Sensitive media stays hidden until the user reveals its note.
 
+Media caches are isolated by server and account.  Opening an attachment
+belongs to the note surface where it was activated: closing that surface
+or opening another attachment cancels the pending open.  Download failures
+appear in the surface header, without opening an unrelated viewer.
+
 #+begin_src emacs-lisp
 (setq misskey-timeline-show-avatars nil
       misskey-timeline-show-media nil)

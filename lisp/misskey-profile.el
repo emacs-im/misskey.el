@@ -14,7 +14,7 @@
 (require 'subr-x)
 (require 'appkit-core)
 (require 'appkit-discussion)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-ui)
 (require 'misskey-actions)
 (require 'misskey-auth)
@@ -142,50 +142,51 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 
 (defun misskey-profile--frame (state)
   "Return the generated profile frame for STATE."
-  (let* ((user (plist-get state :profile-user))
-         (phase (plist-get state :phase))
-         (items (plist-get state :items))
-         (message (plist-get state :message))
-         (view (appkit-current-view))
-         (app (and (appkit-view-live-p view) (appkit-view-app view))))
+  (let*
+      ((user (plist-get state :profile-user))
+       (phase (plist-get state :phase))
+       (items (plist-get state :items))
+       (message (plist-get state :message))
+       (view (appkit-current-surface))
+       (app
+        (and (appkit-surface-live-p view) (appkit-surface-app view))))
     (if (not user)
+        (concat (propertize "Misskey profile" 'face 'bold) "\n"
+                (if (eq phase 'error)
+                    (format "Unable to load profile.\n%s\n\n" message)
+                  "Loading user...\n\n"))
+      (let*
+          ((description (alist-get 'description user))
+           (user-id (misskey-user-id user))
+           (following-p
+            (if (appkit-app-live-p app)
+                (misskey-user-state-value app user-id :following-p
+                                          (eq
+                                           (alist-get 'isFollowing
+                                                      user)
+                                           t))
+              (eq (alist-get 'isFollowing user) t))))
         (concat
-         (propertize "Misskey profile" 'face 'bold)
-         "\n"
-         (if (eq phase 'error)
-             (format "Unable to load profile.\n%s\n\n" message)
-           "Loading user...\n\n"))
-      (let* ((description (alist-get 'description user))
-             (user-id (misskey-user-id user))
-             (following-p
-              (if (appkit-app-live-p app)
-                  (misskey-user-state-value
-                   app user-id :following-p
-                   (eq (alist-get 'isFollowing user) t))
-                (eq (alist-get 'isFollowing user) t))))
-        (concat
-         (propertize
-          (misskey-user-label user)
-          'face 'bold
-          misskey-user-property user
-          misskey-user-id-property user-id)
+         (propertize (misskey-user-label user) 'face 'bold
+                     misskey-user-property user
+                     misskey-user-id-property user-id)
          "  "
-         (propertize
-          (misskey-user-handle user)
-          'face 'shadow
-          misskey-user-property user
-          misskey-user-id-property user-id)
+         (propertize (misskey-user-handle user) 'face 'shadow
+                     misskey-user-property user
+                     misskey-user-id-property user-id)
          "\n"
-         (when (and (stringp description)
-                    (not (string-empty-p description)))
+         (when
+             (and (stringp description)
+                  (not (string-empty-p description)))
            (concat description "\n"))
          (string-join
           (delq nil
-                (list
-                 (and following-p "following")
-                 (misskey-profile--count user 'notesCount "notes")
-                 (misskey-profile--count user 'followersCount "followers")
-                 (misskey-profile--count user 'followingCount "following")))
+                (list (and following-p "following")
+                      (misskey-profile--count user 'notesCount "notes")
+                      (misskey-profile--count user 'followersCount
+                                              "followers")
+                      (misskey-profile--count user 'followingCount
+                                              "following")))
           " · ")
          "\n\n"
          (pcase phase
@@ -227,51 +228,62 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 (defun misskey-profile--handle-error (view state failure)
   "Install profile FAILURE in VIEW STATE."
   (setf (plist-get state :profile-loading-p) nil
-        (plist-get state :phase) 'error
-        (plist-get state :message) failure)
-  (appkit-request-sync view :part 'frame :position t)
+        (plist-get state :phase) 'error (plist-get state :message)
+        failure)
+  (misskey-dispatch view
+                    (list :render
+                          (appkit-projection-change-create :frame-p t
+                                                           :position
+                                                           'preserve)))
   (message "%s" failure))
 
 (defun misskey-profile--handle-user (view state observation payload)
   "Install profile PAYLOAD in VIEW STATE using OBSERVATION."
   (condition-case err
       (let ((user (misskey-profile--validate-user payload)))
-        (misskey-merge-user-state
-         (appkit-view-app view) user observation)
+        (misskey-merge-user-state (appkit-surface-app view) user
+                                  observation)
         (setf (plist-get state :profile-loading-p) nil
               (plist-get state :profile-user) user
               (plist-get state :title) (misskey-user-label user))
-        (misskey-feed-reset-query
-         view "users/notes"
-         (misskey-profile--note-parameters
-          state (plist-get state :profile-mode))))
+        (misskey-feed-reset-query view "users/notes"
+                                  (misskey-profile--note-parameters
+                                   state
+                                   (plist-get state :profile-mode))))
     (error
-     (misskey-profile--handle-error
-      view state (error-message-string err)))))
+     (misskey-profile--handle-error view state
+                                    (error-message-string err)))))
 
 (defun misskey-profile--request-user (view)
   "Resolve and load VIEW's profile user."
   (let ((state (misskey-profile--state view)))
     (misskey-feed-cancel-request view)
-    (let* ((observation (misskey-state-observe (appkit-view-app view)))
-           (operation
-            (appkit-view-operation-begin view misskey-profile--request-key)))
+    (let*
+        ((observation
+          (misskey-state-observe (appkit-surface-app view)))
+         (operation
+          (misskey-read-begin view misskey-profile--request-key)))
       (setf (plist-get state :profile-loading-p) t
             (plist-get state :phase) 'initial
             (plist-get state :message) nil)
-      (appkit-request-sync view :part 'frame :position t)
-      (misskey-http-read
-       "users/show" (plist-get state :profile-reference)
-       (lambda (payload)
-         (when (appkit-view-operation-finish operation)
-           (misskey-profile--handle-user
-            view state observation payload)))
-       :errback
-       (lambda (failure)
-         (when (appkit-view-operation-finish operation)
-           (misskey-profile--handle-error view state failure)))
-       :account (plist-get state :account)
-       :owner operation))))
+      (misskey-dispatch view
+                        (list :render
+                              (appkit-projection-change-create
+                               :frame-p t :position 'preserve)))
+      (misskey-http-read "users/show"
+                         (plist-get state :profile-reference)
+                         (lambda (payload)
+                           (when (misskey-read-finish operation)
+                             (misskey-profile--handle-user view state
+                                                           observation
+                                                           payload)))
+                         :errback
+                         (lambda (failure)
+                           (when (misskey-read-finish operation)
+                             (misskey-profile--handle-error view state
+                                                            failure)))
+                         :account (plist-get state :account) :owner
+                         operation))))
 
 (defun misskey-profile--setup-view (view)
   "Initialize profile VIEW and request its user."
@@ -353,49 +365,51 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 (defun misskey-profile-open-at-point ()
   "Open the Misskey user carried at point in the source view's account."
   (interactive)
-  (if-let* ((user (get-text-property (point) misskey-user-property))
-            (view (appkit-current-view))
-            ((appkit-view-live-p view))
-            (account (plist-get (appkit-view-state view) :account)))
+  (if-let*
+      ((user (get-text-property (point) misskey-user-property))
+       (view (appkit-current-surface)) ((appkit-surface-live-p view))
+       (account (plist-get (appkit-surface-model view) :account)))
       (misskey-profile-open user account)
     (user-error "No Misskey user at point")))
 
 ;;;###autoload
 (defun misskey-profile-open (user &optional account)
-  "Open USER's Misskey profile for ACCOUNT.
-
-USER is a user object, stable ID, or `@username[@host]'.  ACCOUNT defaults to
-the account selected by current customization."
+  "Open USER's Misskey profile for ACCOUNT.\n\nUSER is a user object, stable ID, or `@username[@host]'.  ACCOUNT defaults to\nthe account selected by current customization."
   (interactive "sMisskey user ID or @username[@host]: ")
-  (let* ((target (or account (misskey--current-account)))
-         (_token
-          (and (called-interactively-p 'interactive)
-               (misskey-auth--ensure-token target)))
-         (app (misskey-app target))
-         (reference (misskey-profile--reference user))
-         (reference-key (misskey-profile--reference-key reference))
-         (id (list 'profile reference-key))
-         (existing (appkit-view-for-id app id))
-         (state
-          (or (and existing (appkit-view-state existing))
-              (let ((feed
-                     (misskey-feed-make-state
-                      :type 'profile :account target :title "Profile"
-                      :limit misskey-profile-note-limit
-                      :header-function #'misskey-profile--frame
-                      :footer-function #'misskey-profile--footer)))
-                (setf (plist-get feed :profile-reference) reference
-                      (plist-get feed :profile-user) nil
-                      (plist-get feed :profile-mode) 'notes
-                      (plist-get feed :profile-loading-p) nil)
-                feed)))
-         (view
-          (appkit-open-view
-           :app app :id id :mode #'misskey-profile-mode
-           :buffer-name (format "*misskey profile %s*" reference-key)
-           :state state :sync-function #'misskey-feed-sync
-           :parts '(frame entries) :position-policy 'semantic
-           :setup #'misskey-profile--setup-view :select t)))
+  (let*
+      ((target (or account (misskey--current-account)))
+       (_token
+        (and (called-interactively-p 'interactive)
+             (misskey-auth--ensure-token target)))
+       (app (misskey-app target))
+       (reference (misskey-profile--reference user))
+       (reference-key (misskey-profile--reference-key reference))
+       (id (list 'profile reference-key))
+       (existing (appkit-app-surface app id))
+       (state
+        (or (and existing (appkit-surface-model existing))
+            (let
+                ((feed
+                  (misskey-feed-make-state :type 'profile :account
+                                           target :title "Profile"
+                                           :limit
+                                           misskey-profile-note-limit
+                                           :header-function
+                                           #'misskey-profile--frame
+                                           :footer-function
+                                           #'misskey-profile--footer)))
+              (setf (plist-get feed :profile-reference) reference
+                    (plist-get feed :profile-user) nil
+                    (plist-get feed :profile-mode) 'notes
+                    (plist-get feed :profile-loading-p) nil)
+              feed)))
+       (view
+        (misskey-open-surface :app app :identity id :mode
+                              #'misskey-profile-mode :buffer-name
+                              (format "*misskey profile %s*"
+                                      reference-key)
+                              :input state :setup
+                              #'misskey-profile--setup-view :select t)))
     (unless (plist-get state :profile-user)
       (unless (plist-get state :profile-loading-p)
         (misskey-profile--request-user view)))

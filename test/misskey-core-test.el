@@ -91,14 +91,14 @@
 
 (defun misskey-core-test--app ()
   "Return an isolated live Misskey app for state merge tests."
-  (let ((account
-         (misskey--account-create
-          :origin "https://example.social"
-          :auth-source-user "TOKEN"
-          :remote-user-id "self")))
-    (appkit-app-start
-     'misskey :id (list 'core-test (make-symbol "app"))
-     :state (misskey--make-session account))))
+  (let
+      ((account
+        (misskey--account-create :origin "https://example.social"
+                                 :auth-source-user "TOKEN"
+                                 :remote-user-id "self")))
+    (appkit-app-start misskey--app-type :identity
+                      (list 'core-test (make-symbol "app")) :input
+                      (misskey--make-session account))))
 
 (ert-deftest misskey-state-stale-read-cannot-roll-back-write-fences ()
   (let ((app (misskey-core-test--app)))

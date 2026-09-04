@@ -10,12 +10,13 @@
 ;; deduplication, bounded scheduling, atomic cache writes, and cancellation.
 
 ;;; Code:
+(require 'appkit-media-effect)
 
 (require 'cl-lib)
 (require 'subr-x)
 (require 'appkit-chat-avatar)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+(require 'appkit-projection)
 (require 'appkit-media-image)
 (require 'appkit-media-resource)
 (require 'appkit-ui)
@@ -57,31 +58,26 @@ files stay hidden until their note is explicitly revealed."
   (and misskey-timeline-show-media
        (appkit-media-inline-image-rendering-available-p)))
 
-(defun misskey-media--cache-base (source kind)
-  "Return the extensionless cache path for SOURCE of KIND."
-  (expand-file-name
-   (secure-hash 'sha256 source)
-   (locate-user-emacs-file (format "misskey/%s/" kind))))
+(defun misskey-media--cache-base (source kind surface)
+  "Return SOURCE's account-isolated extensionless cache path for KIND."
+  (expand-file-name (secure-hash 'sha256 source)
+                    (misskey-media--account-directory surface kind)))
 
 (defun misskey-media--entry (view resource-key)
   "Return VIEW's Appkit resource entry for RESOURCE-KEY, or nil."
-  (and (appkit-view-live-p view)
+  (and (appkit-surface-live-p view)
        (gethash resource-key
-                (appkit-app-resource-store (appkit-view-app view)))))
+                (misskey-resource-store (appkit-surface-app view)))))
 
 (defun misskey-media--valid-cache-file-p (file)
   "Return non-nil when FILE is a usable Appkit image cache entry."
   (appkit-media-file-present-p file))
 
-
 (defun misskey-media--finish-resource (app resource-key entry file)
   "Finish APP RESOURCE-KEY ENTRY with cached FILE or failure."
   (when (appkit-app-live-p app)
-    (when-let* ((handle (plist-get entry :handle)))
-      (appkit-retire-handle handle)
-      (setf (plist-get entry :handle) nil))
-    (when (eq entry (gethash resource-key
-                             (appkit-app-resource-store app)))
+    (when
+        (eq entry (gethash resource-key (misskey-resource-store app)))
       (unless (misskey-media--valid-cache-file-p file)
         (setq file nil))
       (setf (plist-get entry :status) (if file 'ready 'failed)
@@ -91,60 +87,51 @@ files stay hidden until their note is explicitly revealed."
       (misskey-invalidate-resource app resource-key))))
 
 (cl-defun misskey-media-request-resource
-    (view resource-key source kind &key name mime-type)
-  "Acquire SOURCE of KIND as RESOURCE-KEY on behalf of VIEW.
-
-The view's application shares resource state.  Appkit shares and bounds the
-atomic transfer.  NAME and MIME-TYPE provide optional media hints.  Return the
-canonical application resource entry."
-  (when (and (appkit-view-live-p view)
-             resource-key
-             (misskey-note--https-url-p source))
-    (let* ((app (appkit-view-app view))
-           (store (appkit-app-resource-store app))
-           (current (gethash resource-key store)))
-      (cond
-       ((and (eq (plist-get current :status) 'ready)
-             (equal (plist-get current :source) source)
-             (misskey-media--valid-cache-file-p
-              (plist-get current :file)))
-        current)
-       ((and (eq (plist-get current :status) 'pending)
-             (equal (plist-get current :source) source))
-        current)
-       (t
-        (when (eq (plist-get current :status) 'pending)
-          (when-let* ((handle (plist-get current :handle)))
-            (setf (plist-get current :handle) nil)
-            (appkit-cancel-handle handle)))
-        (let* ((cache-base (misskey-media--cache-base source kind))
-               (cached (appkit-media-image-cache-existing-file cache-base))
-               (entry (list :source source
-                            :status (if cached 'ready 'pending)
-                            :file cached
-                            :handle nil))
-               transfer)
+    (surface resource-key source kind &key name mime-type)
+  "Acquire SOURCE as an account-scoped preview Effect for SURFACE."
+  (when
+      (and (appkit-surface-live-p surface) resource-key
+           (misskey-note--https-url-p source))
+    (let*
+        ((app (appkit-surface-app surface))
+         (store (misskey-resource-store app))
+         (current (gethash resource-key store)))
+      (if
+          (and (equal (plist-get current :source) source)
+               (or (eq (plist-get current :status) 'pending)
+                   (and (eq (plist-get current :status) 'ready)
+                        (misskey-media--valid-cache-file-p
+                         (plist-get current :file)))))
+          current
+        (let*
+            ((base (misskey-media--cache-base source kind surface))
+             (cached (appkit-media-image-cache-existing-file base))
+             (entry
+              (list :source source :status (if cached 'ready 'pending)
+                    :file cached))
+             (effect
+              (appkit-effect-create :key (list 'preview resource-key)
+                                    :input
+                                    (appkit-media-image-acquisition-create
+                                     (appkit-media-resource-create
+                                      :url source :name name
+                                      :mime-type mime-type)
+                                     base)
+                                    :start
+                                    #'appkit-media-image-acquisition-start
+                                    :success
+                                    (lambda (_input file)
+                                      (list :preview-settled app
+                                            resource-key entry file))
+                                    :failure
+                                    (lambda (_input _failure)
+                                      (list :preview-settled app
+                                            resource-key entry nil)))))
           (puthash resource-key entry store)
           (misskey-invalidate-resource app resource-key)
           (unless cached
-            (setq transfer
-                  (appkit-media-cache-image-resource-async
-                   (appkit-media-resource-create
-                    :url source :name name :mime-type mime-type)
-                   cache-base
-                   (lambda (file)
-                     (misskey-media--finish-resource
-                      app resource-key entry file))
-                   (lambda (_message)
-                     (misskey-media--finish-resource
-                      app resource-key entry nil))))
-            (when (and (eq (plist-get entry :status) 'pending)
-                       (appkit-media-transfer-p transfer))
-              (setf (plist-get entry :handle)
-                    (appkit-register-handle
-                     app 'function transfer
-                     #'appkit-media-cancel-transfer))))
-          entry))))))
+            (misskey-dispatch app (list :preview-effect effect)))
+          entry)))))
 
 (defun misskey-media-request-avatar (view note)
   "Request NOTE's displayed author avatar for VIEW."
@@ -164,24 +151,26 @@ canonical application resource entry."
 
 (defun misskey-media-prefetch-notes (view notes)
   "Request unguarded avatars and media used by NOTES for VIEW."
-  (when (appkit-view-live-p view)
-    (let ((revealed-content
-           (plist-get (appkit-view-state view) :revealed-content)))
+  (when (appkit-surface-live-p view)
+    (let
+        ((revealed-content
+          (plist-get (appkit-surface-model view) :revealed-content)))
       (unless (hash-table-p revealed-content)
         (error "Misskey note view has no content-warning state"))
       (dolist (note notes)
-        (let* ((quoted (misskey-note-quoted-note note))
-               (revealed
-                (gethash (misskey-note-id note) revealed-content)))
+        (let*
+            ((quoted (misskey-note-quoted-note note))
+             (revealed
+              (gethash (misskey-note-id note) revealed-content)))
           (misskey-media-request-avatar view note)
-          (when quoted
-            (misskey-media-request-avatar view quoted))
-          (dolist (file
-                   (append
-                    (misskey-note-media-files note)
-                    (and quoted (misskey-note-media-files quoted))))
-            (unless (and (eq (alist-get 'isSensitive file) t)
-                         (not revealed))
+          (when quoted (misskey-media-request-avatar view quoted))
+          (dolist
+              (file
+               (append (misskey-note-media-files note)
+                       (and quoted (misskey-note-media-files quoted))))
+            (unless
+                (and (eq (alist-get 'isSensitive file) t)
+                     (not revealed))
               (misskey-media-request-file view file))))))))
 
 (defun misskey-media-avatar-image (view note)
@@ -217,33 +206,45 @@ canonical application resource entry."
           (setf (plist-get entry :preview-image) image)
           image))))
 
-(defun misskey-media-open-file (view file)
-  "Open Misskey FILE's original Drive resource from VIEW through Appkit."
-  (let* ((type (alist-get 'type file))
-         (url (misskey-file-original-url file))
-         (_ (unless url
-              (user-error "Misskey media URL must use HTTPS")))
-         (kind
-          (cond
-           ((string-prefix-p "video/" type) 'video)
-           ((string-prefix-p "image/" type) 'image)
-           (t 'file)))
-         (entry
-          (misskey-media--entry view (list :media (alist-get 'id file))))
-         (cached (and (eq (plist-get entry :status) 'ready)
-                      (equal (plist-get entry :source) url)
-                      (plist-get entry :file))))
-    (appkit-media-open-resource
-     (appkit-media-resource-create
-      :file cached
-      :url url
-      :name (alist-get 'name file)
-      :mime-type type)
-     :kind kind
-     :cache-key (alist-get 'id file)
-     :cache-directory (locate-user-emacs-file "misskey/media/")
-     :client-label "Misskey media"
-     :owner view)))
+(defun misskey-media-open-file (surface file)
+  "Send FILE's open intent to its exact initiating SURFACE."
+  (unless (appkit-surface-live-p surface)
+    (user-error "Misskey media host is closed"))
+  (let*
+      ((url (misskey-file-original-url file))
+       (_validated
+        (unless url (user-error "Misskey media URL must use HTTPS")))
+       (mime (or (alist-get 'type file) ""))
+       (kind
+        (cond ((string-prefix-p "video/" mime) 'video)
+              ((string-prefix-p "image/" mime) 'image) (t 'file)))
+       (entry
+        (misskey-media--entry surface
+                              (list :media (alist-get 'id file))))
+       (cached
+        (and (eq (plist-get entry :status) 'ready)
+             (equal (plist-get entry :source) url)
+             (plist-get entry :file))))
+    (unless url (user-error "Misskey media URL must use HTTPS"))
+    (misskey-dispatch surface
+                      (list :media-open
+                            (list :kind kind :directory
+                                  (misskey-media--account-directory
+                                   surface "media")
+                                  :key (secure-hash 'sha256 url)
+                                  :resource
+                                  (appkit-media-resource-create :file
+                                                                cached
+                                                                :url
+                                                                url
+                                                                :name
+                                                                (alist-get
+                                                                 'name
+                                                                 file)
+                                                                :mime-type
+                                                                mime)
+                                  :token
+                                  (make-symbol "misskey-media-"))))))
 
 (defun misskey-media-alt-text (file)
   "Return accessible fallback text for FILE."
@@ -255,47 +256,45 @@ canonical application resource entry."
            (format "[%s]" (alist-get 'name file)))
       "[media]"))
 
-(defun misskey-media-insert-file (view file prefix properties hidden-p)
-  "Insert FILE for VIEW with PREFIX and PROPERTIES.
-
-When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
-  (let* ((start (point))
-         (preview-url (misskey-file-preview-url file))
-         (entry
-          (and (appkit-view-live-p view)
-               (misskey-media--entry
-                view (list :media (alist-get 'id file)))))
-         (image (and (not hidden-p)
-                     (misskey-media-preview-image view file)))
-         (alt (misskey-media-alt-text file)))
-    (cond
-     (hidden-p (insert "[sensitive media]"))
-     (image
-      (appkit-media-insert-image-slices
-       image
-       (lambda () (misskey-media-open-file view file))
-       nil alt "Open Misskey media"))
-     (t
-      (insert
-       (cond
-        ((not misskey-timeline-show-media)
-         (format "%s [preview disabled]" alt))
-        ((string-prefix-p "audio/" (alist-get 'type file))
-         (format "%s [audio]" alt))
-        ((eq (plist-get entry :status) 'failed)
-         (format "%s [preview failed; refresh to retry]" alt))
-        ((and preview-url (misskey-media-previews-enabled-p))
-         (format "%s loading preview…" alt))
-        (preview-url
-         (format "%s [preview unavailable]" alt))
-        (t alt)))
-      (appkit-ui-add-action
-       start (point)
-       (lambda () (misskey-media-open-file view file))
-       :help-echo "Open Misskey media"
-       :face 'link)))
-    (insert "\n")
-    (appkit-ui-apply-line-prefix start (point) prefix)
+(defun misskey-media-insert-file
+    (view file prefix properties hidden-p)
+  "Insert FILE for VIEW with PREFIX and PROPERTIES.\n\nWhen HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
+  (let*
+      ((start (point)) (preview-url (misskey-file-preview-url file))
+       (entry
+        (and (appkit-surface-live-p view)
+             (misskey-media--entry view
+                                   (list :media (alist-get 'id file)))))
+       (image
+        (and (not hidden-p) (misskey-media-preview-image view file)))
+       (alt (misskey-media-alt-text file)))
+    (cond (hidden-p (insert "[sensitive media]"))
+          (image
+           (appkit-media-insert-image-slices image
+                                             (lambda ()
+                                               (misskey-media-open-file
+                                                view file))
+                                             nil alt
+                                             "Open Misskey media"))
+          (t
+           (insert
+            (cond
+             ((not misskey-timeline-show-media)
+              (format "%s [preview disabled]" alt))
+             ((string-prefix-p "audio/" (alist-get 'type file))
+              (format "%s [audio]" alt))
+             ((eq (plist-get entry :status) 'failed)
+              (format "%s [preview failed; refresh to retry]" alt))
+             ((and preview-url (misskey-media-previews-enabled-p))
+              (format "%s loading preview…" alt))
+             (preview-url (format "%s [preview unavailable]" alt))
+             (t alt)))
+           (appkit-ui-add-action start (point)
+                                 (lambda ()
+                                   (misskey-media-open-file view file))
+                                 :help-echo "Open Misskey media" :face
+                                 'link)))
+    (insert "\n") (appkit-ui-apply-line-prefix start (point) prefix)
     (add-text-properties start (point) properties)))
 
 (defun misskey-media-insert-note-files
@@ -306,6 +305,142 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
      view file prefix properties
      (and (eq (alist-get 'isSensitive file) t)
           (not revealed)))))
+
+(defun misskey-media--account-directory (surface kind)
+  "Return the account-isolated KIND cache for SURFACE."
+  (expand-file-name
+   (format "%s/%s/" (secure-hash 'sha256 (prin1-to-string
+                                          (misskey--account-key (plist-get (appkit-surface-model surface) :account)))) kind)
+   (locate-user-emacs-file "misskey/")))
+
+(defun misskey-media-update (model message)
+  "Commit media acquisition and schedule presentation for MODEL MESSAGE."
+  (pcase message
+    (`(:media-open ,intent)
+     (let*
+         ((next model) (kind (plist-get intent :kind))
+          (base
+           (expand-file-name (plist-get intent :key)
+                             (plist-get intent :directory)))
+          (resource (plist-get intent :resource))
+          (effect
+           (appkit-effect-create :key 'misskey-media-acquire :input
+                                 (pcase kind
+                                   ('video resource)
+                                   ('image
+                                    (appkit-media-image-acquisition-create
+                                     resource base))
+                                   (_
+                                    (let
+                                        ((target
+                                          (expand-file-name
+                                           (concat
+                                            (plist-get intent :key)
+                                            "-"
+                                            (appkit-media-sanitize-filename
+                                             (or
+                                              (appkit-media-resource-name
+                                               resource)
+                                              "media.bin")))
+                                           (plist-get intent
+                                                      :directory))))
+                                      (appkit-media-acquisition-create
+                                       (if
+                                           (appkit-media-file-present-p
+                                            target)
+                                           (appkit-media-resource-create
+                                            :file target)
+                                         resource)
+                                       target))))
+                                 :start
+                                 (pcase kind
+                                   ('video
+                                    (lambda
+                                      (_context input _observe resolve
+                                                _reject)
+                                      (funcall resolve input)
+                                      nil))
+                                   ('image
+                                    #'appkit-media-image-acquisition-start)
+                                   (_ #'appkit-media-acquisition-start))
+                                 :success
+                                 (lambda (_input file)
+                                   (list :media-acquired intent file))
+                                 :failure
+                                 (lambda (_input failure)
+                                   (list :media-failed
+                                         (plist-get intent :token)
+                                         failure)))))
+       (setq next (plist-put next :media-error nil) next
+             (plist-put next :media-intent (plist-get intent :token)))
+       (setq next (plist-put next :media-status 'acquiring))
+       (appkit-next :model next :render
+                    (appkit-projection-change-create :frame-p t)
+                    :commands
+                    (list
+                     (appkit-command-cancel-effect
+                      'misskey-media-present)
+                     (appkit-command-start-effect effect)))))
+    (`(:media-acquired ,intent ,file)
+     (if
+         (eq (plist-get model :media-intent) (plist-get intent :token))
+         (let*
+             ((next model)
+              (video-p (eq (plist-get intent :kind) 'video))
+              (input
+               (if video-p
+                   (appkit-media-video-presentation-create file :label
+                                                           "Misskey media"
+                                                           :cache-key
+                                                           (plist-get
+                                                            intent
+                                                            :key)
+                                                           :cache-directory
+                                                           (plist-get
+                                                            intent
+                                                            :directory))
+                 file)))
+           (setq next (plist-put next :media-status 'presenting))
+           (setq next (plist-put next :media-file file))
+           (appkit-next :model next :render appkit-render-none
+                        :commands
+                        (list
+                         (appkit-command-start-effect
+                          (appkit-effect-create :key
+                                                'misskey-media-present
+                                                :input input :start
+                                                (if video-p
+                                                    #'appkit-media-video-presentation-start
+                                                  #'appkit-media-file-presentation-start)
+                                                :success
+                                                (lambda (_input _result)
+                                                  (list
+                                                   :media-presented
+                                                   (plist-get intent
+                                                              :token)))
+                                                :failure
+                                                (lambda (_input failure)
+                                                  (list :media-failed
+                                                        (plist-get
+                                                         intent :token)
+                                                        failure)))))))
+       (appkit-next :model model :render appkit-render-none)))
+    (`(:media-failed ,token ,failure)
+     (if (eq token (plist-get model :media-intent))
+         (let ((next model))
+           (setq next (plist-put next :media-status 'failed))
+           (setq next
+                 (plist-put next :media-error (format "%s" failure)))
+           (appkit-next :model next :render
+                        (appkit-projection-change-create :frame-p t)))
+       (appkit-next :model model :render appkit-render-none)))
+    (`(:media-presented ,token)
+     (appkit-next :model
+                  (if (eq token (plist-get model :media-intent))
+                      (plist-put model :media-status 'ready)
+                    model)
+                  :render appkit-render-none))
+    (_ (appkit-next :model model :render appkit-render-none))))
 
 (provide 'misskey-media)
 

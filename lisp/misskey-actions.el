@@ -32,12 +32,13 @@
 
 (defun misskey-actions--view ()
   "Return the current live Misskey Appkit view."
-  (or (when-let* ((view (appkit-current-view))
-                  ((appkit-view-live-p view))
-                  (state (appkit-view-state view))
-                  ((misskey--account-p (plist-get state :account))))
-        view)
-      (user-error "Current buffer has no live Misskey view")))
+  (or
+   (when-let*
+       ((view (appkit-current-surface)) ((appkit-surface-live-p view))
+        (state (appkit-surface-model view))
+        ((misskey--account-p (plist-get state :account))))
+     view)
+   (user-error "Current buffer has no live Misskey view")))
 
 (defun misskey-actions--note-at-point (&optional display-note-p)
   "Return the Misskey note at point.
@@ -246,21 +247,21 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
        (message "Misskey action callback failed: %s"
                 (error-message-string err))))))
 
-
 (defun misskey-actions--dispatch-lane (lane)
   "Dispatch LANE's latest desired mutation."
-  (let* ((app (misskey-actions--lane-app lane))
-         (table (appkit-app-request-table app))
-         (key (misskey-actions--lane-key lane))
-         (target (misskey-actions--lane-desired-target lane))
-         (requested (misskey-actions--lane-desired-action lane))
-         (action (misskey-actions--effective-action app requested target))
-         (value (misskey-actions--lane-desired-value lane))
-         (callback (misskey-actions--lane-desired-callback lane))
-         (operation (cons action nil))
-         (spec (misskey-actions--spec action target value))
-         callback-ran-p
-         request)
+  (let*
+      ((app (misskey-actions--lane-app lane))
+       (table (misskey-request-table app))
+       (key (misskey-actions--lane-key lane))
+       (target (misskey-actions--lane-desired-target lane))
+       (requested (misskey-actions--lane-desired-action lane))
+       (action
+        (misskey-actions--effective-action app requested target))
+       (value (misskey-actions--lane-desired-value lane))
+       (callback (misskey-actions--lane-desired-callback lane))
+       (operation (cons action nil))
+       (spec (misskey-actions--spec action target value))
+       callback-ran-p request)
     (setf (misskey-actions--lane-requested-action lane) requested
           (misskey-actions--lane-value lane) value
           (misskey-actions--lane-token lane) operation
@@ -269,67 +270,89 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
           (misskey-actions--lane-desired-value lane) nil
           (misskey-actions--lane-desired-callback lane) nil)
     (misskey-actions--fence app action target)
-    (setq
-     request
-     (misskey-http-post
-      (car spec) (cadr spec)
-      (lambda (payload)
-        (setq callback-ran-p t)
-        (when (and (appkit-app-live-p app)
-                   (eq lane (gethash key table))
-                   (eq operation (misskey-actions--lane-token lane)))
-          (let ((applied-p t)
-                desired-callback)
-            (condition-case err
-                (misskey-actions--apply-success
-                 app action target value payload)
-              (error
-               (setq applied-p nil)
-               (message "Misskey action state update failed: %s"
-                        (error-message-string err))))
-            ;; Settle or advance the lane before arbitrary client code runs.
-            (if (misskey-actions--lane-desired-action lane)
-                (if (misskey-actions--same-intent-p lane)
-                    (progn
-                      (setq desired-callback
-                            (misskey-actions--lane-desired-callback lane))
-                      (remhash key table))
-                  (condition-case err
-                      (misskey-actions--dispatch-lane lane)
-                    (error
-                     (remhash key table)
-                     (message "Misskey queued action failed: %s"
-                              (error-message-string err)))))
-              (remhash key table))
-            (when applied-p
-              (misskey-actions--invoke-callback callback payload)
-              (misskey-actions--invoke-callback desired-callback payload)
-              (message "%s" (misskey-actions--label action))))))
-      :errback
-      (lambda (failure)
-        (setq callback-ran-p t)
-        (when (and (appkit-app-live-p app)
-                   (eq lane (gethash key table))
-                   (eq operation (misskey-actions--lane-token lane)))
-          (message "%s" failure)
-          (if (and (misskey-actions--lane-desired-action lane)
-                   (not (misskey-actions--same-intent-p lane)))
-              (condition-case err
-                  (misskey-actions--dispatch-lane lane)
-                (error
-                 (remhash key table)
-                 (message "Misskey queued action failed: %s"
-                          (error-message-string err))))
-            (remhash key table))))
-      :account (misskey-actions--lane-account lane)
-      :owner app))
-    (when (and request (not callback-ran-p)
-               (eq lane (gethash key table))
-               (eq operation (misskey-actions--lane-token lane)))
+    (setq request
+          (misskey-http-post (car spec) (cadr spec)
+                             (lambda (payload) (setq callback-ran-p t)
+                               (when
+                                   (and (appkit-app-live-p app)
+                                        (eq lane (gethash key table))
+                                        (eq operation
+                                            (misskey-actions--lane-token
+                                             lane)))
+                                 (let ((applied-p t) desired-callback)
+                                   (condition-case err
+                                       (misskey-actions--apply-success
+                                        app action target value
+                                        payload)
+                                     (error (setq applied-p nil)
+                                            (message
+                                             "Misskey action state update failed: %s"
+                                             (error-message-string err))))
+                                   (if
+                                       (misskey-actions--lane-desired-action
+                                        lane)
+                                       (if
+                                           (misskey-actions--same-intent-p
+                                            lane)
+                                           (progn
+                                             (setq desired-callback
+                                                   (misskey-actions--lane-desired-callback
+                                                    lane))
+                                             (remhash key table))
+                                         (condition-case err
+                                             (misskey-actions--dispatch-lane
+                                              lane)
+                                           (error (remhash key table)
+                                                  (message
+                                                   "Misskey queued action failed: %s"
+                                                   (error-message-string
+                                                    err)))))
+                                     (remhash key table))
+                                   (when applied-p
+                                     (misskey-actions--invoke-callback
+                                      callback payload)
+                                     (misskey-actions--invoke-callback
+                                      desired-callback payload)
+                                     (message "%s"
+                                              (misskey-actions--label
+                                               action))))))
+                             :errback
+                             (lambda (failure) (setq callback-ran-p t)
+                               (when
+                                   (and (appkit-app-live-p app)
+                                        (eq lane (gethash key table))
+                                        (eq operation
+                                            (misskey-actions--lane-token
+                                             lane)))
+                                 (message "%s" failure)
+                                 (if
+                                     (and
+                                      (misskey-actions--lane-desired-action
+                                       lane)
+                                      (not
+                                       (misskey-actions--same-intent-p
+                                        lane)))
+                                     (condition-case err
+                                         (misskey-actions--dispatch-lane
+                                          lane)
+                                       (error (remhash key table)
+                                              (message
+                                               "Misskey queued action failed: %s"
+                                               (error-message-string
+                                                err))))
+                                   (remhash key table))))
+                             :account
+                             (misskey-actions--lane-account lane)
+                             :owner app))
+    (when
+        (and request (not callback-ran-p)
+             (eq lane (gethash key table))
+             (eq operation (misskey-actions--lane-token lane)))
       (setf (misskey-actions--lane-request lane) request))
-    (when (and (null request) (not callback-ran-p)
-               (eq lane (gethash key table))
-               (eq operation (misskey-actions--lane-token lane)))
+    (when
+        (and (null request) (not callback-ran-p)
+             (eq lane (gethash key table))
+             (eq operation (misskey-actions--lane-token lane)))
       (remhash key table))
     request))
 
@@ -341,13 +364,13 @@ CALLBACK receives the successful response payload after the lane settles.
 Inverse mutations share a per-target lane.  A later call replaces the queued
 intent but never dispatches concurrently with the lane's active write."
   (misskey-actions--validate-intent action value)
-  (let* ((target-account (or account (misskey--current-account)))
-         (app (misskey-app target-account))
-         (id (misskey-actions--target-id action target))
-         (key (list 'misskey-action
-                    (misskey-actions--lane-kind action) id))
-         (table (appkit-app-request-table app))
-         (lane (gethash key table)))
+  (let*
+      ((target-account (or account (misskey--current-account)))
+       (app (misskey-app target-account))
+       (id (misskey-actions--target-id action target))
+       (key
+        (list 'misskey-action (misskey-actions--lane-kind action) id))
+       (table (misskey-request-table app)) (lane (gethash key table)))
     (if lane
         (progn
           (setf (misskey-actions--lane-desired-target lane) target
@@ -356,22 +379,23 @@ intent but never dispatches concurrently with the lane's active write."
                 (misskey-actions--lane-desired-callback lane) callback)
           (misskey-actions--lane-request lane))
       (setq lane
-            (misskey-actions--lane-create
-             :key key :app app :account target-account
-             :desired-target target :desired-action action
-             :desired-value value :desired-callback callback))
-      (puthash key lane table)
-      (misskey-actions--dispatch-lane lane))))
+            (misskey-actions--lane-create :key key :app app :account
+                                          target-account
+                                          :desired-target target
+                                          :desired-action action
+                                          :desired-value value
+                                          :desired-callback callback))
+      (puthash key lane table) (misskey-actions--dispatch-lane lane))))
 
-(defun misskey-actions--perform-note (action &optional value raw-note-p)
-  "Perform note ACTION with VALUE at point.
-
-RAW-NOTE-P non-nil targets a pure-renote wrapper instead of its displayed note."
-  (let* ((view (misskey-actions--view))
-         (note (misskey-actions--note-at-point (not raw-note-p))))
-    (misskey-actions-perform
-     action note :value value
-     :account (plist-get (appkit-view-state view) :account))))
+(defun misskey-actions--perform-note
+    (action &optional value raw-note-p)
+  "Perform note ACTION with VALUE at point.\n\nRAW-NOTE-P non-nil targets a pure-renote wrapper instead of its displayed note."
+  (let*
+      ((view (misskey-actions--view))
+       (note (misskey-actions--note-at-point (not raw-note-p))))
+    (misskey-actions-perform action note :value value :account
+                             (plist-get (appkit-surface-model view)
+                                        :account))))
 
 (defun misskey-react-at-point (reaction)
   "Add REACTION to the displayed Misskey note at point."
@@ -410,9 +434,10 @@ RAW-NOTE-P non-nil targets a pure-renote wrapper instead of its displayed note."
 (defun misskey-actions--perform-user (action)
   "Perform user ACTION at point."
   (let ((view (misskey-actions--view)))
-    (misskey-actions-perform
-     action (misskey-actions--user-at-point)
-     :account (plist-get (appkit-view-state view) :account))))
+    (misskey-actions-perform action (misskey-actions--user-at-point)
+                             :account
+                             (plist-get (appkit-surface-model view)
+                                        :account))))
 
 (defun misskey-follow-at-point ()
   "Follow the Misskey user at point."
