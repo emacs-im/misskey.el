@@ -246,7 +246,7 @@ records."
          (app (gethash key misskey--apps)))
     (unless (appkit-app-live-p app)
       (setq app
-            (appkit-start-app
+            (appkit-app-start
              'misskey :id key :state (misskey--make-session target)))
       (puthash key app misskey--apps))
     app))
@@ -452,7 +452,7 @@ Missing wire keys do not alter state; an explicitly present nil value does."
      (lambda (_key app)
        (condition-case err
            (when (appkit-app-live-p app)
-             (appkit-stop-app app))
+             (appkit-app-close app))
          (error
           (unless first-error
             (setq first-error err)))))

@@ -288,7 +288,7 @@
            (old-app (gethash old-key misskey--apps))
            (livep (appkit-app-live-p old-app)))
       (when livep
-        (appkit-stop-app old-app))
+        (appkit-app-close old-app))
       (remhash old-key misskey--apps)
       (when livep
         (misskey-app

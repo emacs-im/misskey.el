@@ -106,7 +106,7 @@
           (should (= (length requests) 3)))
       (when (appkit-view-p first) (appkit-kill-view first t))
       (when (appkit-view-p second) (appkit-kill-view second t))
-      (when (appkit-app-live-p app) (appkit-stop-app app)))))
+      (when (appkit-app-live-p app) (appkit-app-close app)))))
 
 (ert-deftest misskey-actions-failure-does-not-install-state ()
   (let* ((misskey--apps (make-hash-table :test #'equal))
@@ -128,7 +128,7 @@
           (misskey-actions-perform 'favorite note :account account)
           (should-not
            (misskey-note-state-value app "note-1" :favorited-p nil)))
-      (when (appkit-app-live-p app) (appkit-stop-app app)))))
+      (when (appkit-app-live-p app) (appkit-app-close app)))))
 
 (ert-deftest misskey-actions-follow-installs-user-override ()
   (let* ((misskey--apps (make-hash-table :test #'equal))
@@ -149,7 +149,7 @@
           (misskey-actions-perform 'follow user :account account)
           (should
            (misskey-user-state-value app "u1" :following-p nil)))
-      (when (appkit-app-live-p app) (appkit-stop-app app)))))
+      (when (appkit-app-live-p app) (appkit-app-close app)))))
 
 (defun misskey-actions-test--app ()
   "Return an isolated live Misskey app for mutation tests."
@@ -158,7 +158,7 @@
           :origin "https://example.social"
           :auth-source-user "TOKEN"
           :remote-user-id "self")))
-    (appkit-start-app
+    (appkit-app-start
      'misskey :id (list 'actions-test (make-symbol "app"))
      :state (misskey--make-session account))))
 
@@ -201,7 +201,7 @@
           (should-not
            (misskey-note-state-value
             app "note-1" :favorited-p 'missing)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-actions-throwing-client-callback-cannot-strand-lane ()
   (let ((app (misskey-actions-test--app))
@@ -231,7 +231,7 @@
           (should-not
            (misskey-note-state-value
             app "note-1" :favorited-p 'missing)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-actions-latest-inverse-survives-first-write-error ()
   (let ((app (misskey-actions-test--app))
@@ -266,7 +266,7 @@
            (= (misskey-note-state-value
                app "note-1" :reaction-count 0)
               1)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-actions-cancels-pending-follow-in-shared-lane ()
   (let ((app (misskey-actions-test--app))
@@ -298,7 +298,7 @@
            (misskey-user-state-value app "u1" :following-p t))
           (should-not
            (misskey-user-state-value app "u1" :follow-pending-p t)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-actions-delete-keeps-wrapper-while-compose-unwraps ()
   (let* ((display

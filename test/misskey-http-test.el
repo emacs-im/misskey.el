@@ -67,7 +67,7 @@
 
 (ert-deftest misskey-http-rejects-hostile-token-before-curl-config ()
   (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "hostile-token")))
+         (owner (appkit-app-start 'misskey :id (make-symbol "hostile-token")))
          (started-p nil)
          failure)
     (unwind-protect
@@ -88,7 +88,7 @@
           (should (string-match-p "invalid" failure))
           (should-not (string-match-p "X-Evil" failure)))
       (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+        (appkit-app-close owner)))))
 
 (ert-deftest misskey-http-redacts-secret-from-delivered-errors ()
   (let (failure)
@@ -104,7 +104,7 @@
 
 (ert-deftest misskey-http-post-dispatch-errors-are-unknown-and-redacted ()
   (let* ((misskey-instance-url "https://example.social")
-         (owner (appkit-start-app 'misskey :id (make-symbol "post-error")))
+         (owner (appkit-app-start 'misskey :id (make-symbol "post-error")))
          failure)
     (unwind-protect
         (cl-letf (((symbol-function 'executable-find)
@@ -123,7 +123,7 @@
           (should (string-match-p "\\[REDACTED\\]" failure))
           (should-not (string-match-p "SECRET" failure)))
       (when (appkit-app-live-p owner)
-        (appkit-stop-app owner)))))
+        (appkit-app-close owner)))))
 
 (ert-deftest misskey-http-auth-config-keeps-token-off-command-line ()
   (let ((file (make-temp-file "misskey-http-command-")))

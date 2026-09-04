@@ -96,7 +96,7 @@
           :origin "https://example.social"
           :auth-source-user "TOKEN"
           :remote-user-id "self")))
-    (appkit-start-app
+    (appkit-app-start
      'misskey :id (list 'core-test (make-symbol "app"))
      :state (misskey--make-session account))))
 
@@ -132,7 +132,7 @@
           ;; Private favorites have no authoritative note field to merge.
           (should
            (misskey-note-state-value app "n1" :favorited-p nil)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-state-authoritative-merge-respects-field-presence ()
   (let ((app (misskey-core-test--app)))
@@ -159,7 +159,7 @@
           (should-not
            (misskey-note-state-value
             app "n1" :my-reaction "unexpected")))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (ert-deftest misskey-state-newer-read-wins-over-later-stale-callback ()
   (let ((app (misskey-core-test--app)))
@@ -183,7 +183,7 @@
           (should-not
            (misskey-user-state-value
             app "u1" :follow-pending-p t)))
-      (appkit-stop-app app))))
+      (appkit-app-close app))))
 
 (provide 'misskey-core-test)
 

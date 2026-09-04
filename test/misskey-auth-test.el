@@ -199,7 +199,7 @@
          (new (misskey--credential-create
                :token "NEW" :user-id "bob-id"))
          (old-key '("https://example.social" "alice-id"))
-         (old-app (appkit-start-app 'misskey :id old-key))
+         (old-app (appkit-app-start 'misskey :id old-key))
          recreated)
     (puthash old-key old-app misskey--apps)
     (unwind-protect
@@ -214,7 +214,7 @@
                          "bob-id")))
       (remhash old-key misskey--apps)
       (when (appkit-app-live-p old-app)
-        (appkit-stop-app old-app)))))
+        (appkit-app-close old-app)))))
 
 (ert-deftest misskey-public-entry-points-authorize-before-opening ()
   (let (calls)

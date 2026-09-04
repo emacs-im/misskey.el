@@ -885,7 +885,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                      (alist-get 'file opened-resource))))))
 
 (ert-deftest misskey-media-shared-retry-invalidates-all-live-views ()
-  (let* ((app (appkit-start-app 'misskey :id 'media-retry
+  (let* ((app (appkit-app-start 'misskey :id 'media-retry
                                 :shutdown #'ignore))
          (first-buffer (generate-new-buffer " *misskey-media-first*"))
          (second-buffer (generate-new-buffer " *misskey-media-second*"))
@@ -932,7 +932,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
             (should (memq first-view invalidated))
             (should (memq second-view invalidated))))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app))
+        (appkit-app-close app))
       (when (buffer-live-p first-buffer)
         (kill-buffer first-buffer))
       (when (buffer-live-p second-buffer)
@@ -944,7 +944,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
           :origin "https://example.social"
           :auth-source-user "TOKEN"
           :remote-user-id "self")))
-    (appkit-start-app
+    (appkit-app-start
      'misskey :id (list 'timeline-test (make-symbol "app"))
      :state (misskey--make-session account))))
 
@@ -1054,7 +1054,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (1- (point)) misskey-note-property)
                quote)))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app)))))
+        (appkit-app-close app)))))
 
 (ert-deftest misskey-render-deletion-propagates-into-nested-renotes ()
   (let* ((app (misskey-timeline-test--isolated-app))
@@ -1094,7 +1094,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should-not
                (string-match-p "deleted nested body" (buffer-string))))))
       (when (appkit-app-live-p app)
-        (appkit-stop-app app)))))
+        (appkit-app-close app)))))
 
 (provide 'misskey-timeline-test)
 
