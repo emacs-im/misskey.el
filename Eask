@@ -4,7 +4,7 @@
          "0.1.0"
          "Browse and publish on Misskey-compatible servers")
 
-(website-url "https://github.com/0WD0/misskey.el")
+(website-url "https://github.com/emacs-im/misskey.el")
 (keywords "convenience" "comm")
 
 (package-file "misskey.el")
