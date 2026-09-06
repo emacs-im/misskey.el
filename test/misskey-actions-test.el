@@ -201,7 +201,7 @@
             (should (equal (mapcar #'car requests)
                            '("notes/favorites/create"
                              "notes/favorites/delete")))
-          ;; A duplicated older callback cannot retire the newer inverse.
+            ;; A duplicated older callback cannot retire the newer inverse.
             (funcall (nth 2 (nth 0 requests)) nil)
             (should (= (length requests) 2))
             (funcall (nth 2 (nth 1 requests)) nil)

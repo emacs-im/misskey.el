@@ -514,8 +514,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (funcall download-success cache-file)
                 (misskey-test-drain view)
                 (should (equal (car avatar-images) avatar-image))
-                (should (equal (appkit-discussion-key-at-point) "n1"))
-                )))
+                (should (equal (appkit-discussion-key-at-point) "n1")))))
         (misskey-timeline-test--cleanup view buffer)))))
 
 (ert-deftest misskey-home-loads-media-preview-with-stable-row-position
@@ -584,8 +583,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (funcall download-success cache-file)
                 (misskey-test-drain view)
                 (should (equal (car inserted-images) media-image))
-                (should (equal (appkit-discussion-key-at-point) "n1"))
-                )))
+                (should (equal (appkit-discussion-key-at-point) "n1")))))
         (misskey-timeline-test--cleanup view buffer)))))
 
 (ert-deftest
@@ -721,8 +719,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                     (gethash (list :avatar avatar-url)
                              (misskey-resource-store
                               (appkit-surface-app view)))))
-                (should (eq (plist-get entry :status) 'pending))
-                )
+                (should (eq (plist-get entry :status) 'pending)))
               (kill-buffer (appkit-surface-buffer view))
               (should (= cancellations 0)) (misskey-stop)
               (should (= cancellations 1))))

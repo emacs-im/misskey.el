@@ -515,11 +515,11 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
                                             reject)
                                   (let
                                       ((request
-                                        (misskey-http--start-request
-                                         endpoint input resolve
-                                         :errback reject :owner
-                                         surface :account account
-                                         :writep writep)))
+                                         (misskey-http--start-request
+                                          endpoint input resolve
+                                          :errback reject :owner
+                                          surface :account account
+                                          :writep writep)))
                                     (when request
                                       (appkit-cancellation-create
                                        :kind 'transport :cancel
@@ -623,10 +623,10 @@ ACCOUNT selects the server origin.  Return the decoded response."
          (data (misskey-http--json-data parameters))
          result
          (request
-          (misskey-http--request-create
-           :callback (lambda (payload) (setq result (cons 'success payload)))
-           :errback (lambda (message) (setq result (cons 'error message)))
-           :writep nil))
+           (misskey-http--request-create
+            :callback (lambda (payload) (setq result (cons 'success payload)))
+            :errback (lambda (message) (setq result (cons 'error message)))
+            :writep nil))
          (command (misskey-http--json-command request-url))
          (process
           (misskey-http--start-curl

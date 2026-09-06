@@ -86,7 +86,7 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
   "Validate queued ACTION and VALUE without constructing a request."
   (unless (memq action
                 '(react unreact favorite unfavorite renote delete-note
-                        follow unfollow cancel-follow))
+                  follow unfollow cancel-follow))
     (error "Unknown Misskey action: %S" action))
   (when (and (eq action 'react)
              (not (and (stringp value) (not (string-empty-p value)))))

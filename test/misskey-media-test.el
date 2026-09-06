@@ -47,7 +47,7 @@
                            (funcall (plist-get transfer (if failure :failure :success))
                                     (if failure "controlled failure" file))))
                       (dotimes (number 40) (request number))
-                      
+
                       (misskey-test-drain surface)
                       (should (appkit-app-live-p app))
                       (should (appkit-surface-live-p surface))
@@ -102,7 +102,7 @@
                       (should (eq 'pending (plist-get
                                             (gethash '(:media 40) (misskey-resource-store app))
                                             :status)))
-                  ;; Replacing a queued demand with a cache hit must retire it.
+                      ;; Replacing a queued demand with a cache hit must retire it.
                       (cl-letf (((symbol-function 'appkit-media-image-cache-existing-file)
                                  (lambda (_base) file)))
                         (misskey-media-request-resource
@@ -115,7 +115,7 @@
                       (misskey-stop)
                       (should (= cancelled 8))
                       (should (= active 0))
-                  ;; Deliver every stale transport callback after cancellation.
+                      ;; Deliver every stale transport callback after cancellation.
                       (dolist (transfer transfers)
                         (funcall (plist-get transfer :success) file))
                       (should (= starts 48))
