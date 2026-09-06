@@ -7,8 +7,10 @@
 (require 'misskey-core)
 (require 'misskey-http)
 (require 'misskey-note)
+(require 'button)
+(require 'appkit-ui)
 
-(declare-function misskey-render-toggle-content-warning "misskey-render")
+(declare-function misskey-thread-at-point "misskey-thread" ())
 (declare-function misskey-render-note-at-point "misskey-render")
 (declare-function misskey-thread-open "misskey-thread")
 (declare-function misskey-profile-open "misskey-profile")
@@ -183,18 +185,40 @@ VIEW supplies the account and owns any asynchronous federation resolution."
         ('browser (browse-url url))
         (_ (misskey-navigation--open-native (car route) (cadr route) account))))))
 
-(defun misskey-navigation-activate ()
-  "Activate the exact text span at point, otherwise toggle the Note's CW."
+(defun misskey-navigation-activate nil
+  "Activate the exact link, action, button, or author, or open the note thread."
   (interactive)
-  (if-let* ((target (get-text-property (point) misskey-navigation-target-property)))
-      (let* ((view (misskey-navigation--view))
-             (account (plist-get (appkit-surface-model view) :account)))
-        (unless (eq (car target) 'url) (misskey-read-cancel view 'navigation))
-        (pcase (car target)
-          ('url (misskey-navigation-open-url (cadr target) view))
-          ('mention (misskey-navigation--open-native 'user (cadr target) account))
-          ('tag (misskey-navigation--open-native 'tag (cadr target) account))))
-    (misskey-render-toggle-content-warning)))
+  (cond
+   ((get-text-property (point) misskey-navigation-target-property)
+    (let*
+        ((target
+          (get-text-property (point)
+                             misskey-navigation-target-property))
+         (view (misskey-navigation--view))
+         (account (plist-get (appkit-surface-model view) :account)))
+      (unless (eq (car target) 'url)
+        (misskey-read-cancel view 'navigation))
+      (pcase (car target)
+        ('url (misskey-navigation-open-url (cadr target) view))
+        ('mention
+         (misskey-navigation--open-native 'user (cadr target) account))
+        ('tag
+         (misskey-navigation--open-native 'tag (cadr target) account)))))
+   ((get-text-property (point) appkit-ui-action-property)
+    (appkit-ui-activate-at))
+   ((button-at (point)) (button-activate (button-at (point))))
+   ((get-text-property (point) misskey-user-property)
+    (let*
+        ((view (misskey-navigation--view))
+         (account (plist-get (appkit-surface-model view) :account)))
+      (misskey-read-cancel view 'navigation)
+      (misskey-navigation--open-native 'user
+                                       (get-text-property (point)
+                                                          misskey-user-property)
+                                       account)))
+   (t (misskey-read-cancel (misskey-navigation--view) 'navigation)
+      (require 'misskey-thread) (misskey-thread-at-point))))
+
 
 (defun misskey-navigation-mouse-activate (event)
   "Activate the exact text span clicked by EVENT."

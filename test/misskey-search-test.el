@@ -107,6 +107,107 @@
         (dolist (view (list tag text))
           (when (appkit-surface-p view) (kill-buffer (appkit-surface-buffer view))))))))
 
+(ert-deftest
+    misskey-search-settles-realistic-pages-across-live-surfaces nil
+  (misskey-test-with-session
+    (let ((account (misskey--current-account)) requests tag other)
+      (cl-letf
+          (((symbol-function 'message) #'ignore)
+           ((symbol-function 'misskey-http--start-request)
+            (lambda (_endpoint _parameters callback &rest options)
+              (push (list callback (plist-get options :errback))
+                    requests)
+              (misskey-http--request-create :callback #'ignore
+                                            :errback #'ignore))))
+        (setq tag (misskey-search-tag "emacs" account) other
+              (misskey-search "other" account))
+        (let*
+            ((page
+              (cl-loop for index from 1 to 20 collect
+                       (append
+                        (misskey-search-test--note
+                         (format "note-%d" index)
+                         "A visible search result")
+                        '((reactionCount . 1) (renoteCount . 0)))))
+             (expected (mapcar #'misskey-note-id page)))
+          (funcall (car (cadr requests)) page)
+          (misskey-test-drain tag)
+          (should
+           (equal (misskey-test-visible-note-keys tag) expected))
+          (should-not (appkit-loop-fault (appkit-surface-loop tag)))
+          (should
+           (eq (plist-get (misskey-feed-view-state tag) :phase) 'ready)))
+        (funcall (cadar requests) "Search rejected")
+        (misskey-test-drain other)
+        (with-current-buffer (appkit-surface-buffer other)
+          (should (string-match-p "Search rejected" (buffer-string))))
+        (should
+         (eq (plist-get (misskey-feed-view-state other) :phase) 'error))
+        (misskey-feed-refresh other) (funcall (caar requests) nil)
+        (misskey-test-drain other)
+        (should
+         (eq (plist-get (misskey-feed-view-state other) :phase) 'ready))
+        (with-current-buffer (appkit-surface-buffer other)
+          (should (string-match-p "No matching notes" (buffer-string))))))))
+
+
+(ert-deftest
+    misskey-search-paging-retries-without-overlap-or-stale-query-results
+    nil
+  (misskey-test-with-session
+    (let (requests view)
+      (cl-letf
+          (((symbol-function 'message) #'ignore)
+           ((symbol-function 'misskey-http--start-request)
+            (lambda (_endpoint _parameters callback &rest options)
+              (push (list callback (plist-get options :errback))
+                    requests)
+              (misskey-http--request-create :callback #'ignore
+                                            :errback #'ignore))))
+        (setq view (misskey-search "first" (misskey--current-account)))
+        (should-error (misskey-feed-load-more view) :type 'user-error)
+        (funcall (caar requests)
+                 (list (misskey-search-test--note "first" "First")))
+        (misskey-test-drain view) (misskey-feed-load-more view)
+        (let ((count (length requests)))
+          (should-error (misskey-feed-load-more view) :type
+                        'user-error)
+          (should (= (length requests) count)))
+        (funcall (cadar requests) "Older page rejected")
+        (misskey-test-drain view)
+        (should
+         (equal (misskey-test-visible-note-keys view) '("first")))
+        (with-current-buffer (appkit-surface-buffer view)
+          (should
+           (string-match-p "Older page rejected" (buffer-string))))
+        (misskey-feed-load-more view)
+        (let ((stale (caar requests)))
+          (misskey-feed-reset-query view "notes/search"
+                                    '(:query "second")
+                                    "Search: second")
+          (funcall stale
+                   (list
+                    (misskey-search-test--note "stale" "Wrong query")))
+          (funcall (caar requests)
+                   (list (misskey-search-test--note "second" "Second"))))
+        (misskey-test-drain view)
+        (should
+         (equal (misskey-test-visible-note-keys view) '("second")))
+        (misskey-feed-load-more view) (funcall (caar requests) nil)
+        (misskey-test-drain view)
+        (should-error (misskey-feed-load-more view) :type 'user-error)
+        (misskey-feed-refresh view)
+        (funcall (caar requests)
+                 (list (misskey-search-test--note "second" "Second")))
+        (misskey-test-drain view) (misskey-feed-load-more view)
+        (funcall (caar requests)
+                 (list (misskey-search-test--note "older" "Older")))
+        (misskey-test-drain view)
+        (should
+         (equal (misskey-test-visible-note-keys view)
+                '("second" "older")))))))
+
+
 (provide 'misskey-search-test)
 
 ;;; misskey-search-test.el ends here

@@ -89,12 +89,15 @@ Used as Transient advice for both interactive argument reading and execution."
               (get-text-property (point) misskey-navigation-target-property))))))
 
 (defun misskey-menu--activation-p ()
-  "Whether point in the originating view has a link or content warning."
+  "Whether point in the originating view has an action or note to open."
   (and (misskey-menu--view-state)
-       (or (misskey-menu--in-source
-            (lambda ()
-              (get-text-property (point) misskey-navigation-target-property)))
-           (alist-get 'cw (misskey-menu--note)))))
+       (misskey-menu--in-source
+        (lambda ()
+          (or (get-text-property (point) misskey-navigation-target-property)
+              (get-text-property (point) appkit-ui-action-property)
+              (button-at (point))
+              (get-text-property (point) misskey-user-property)
+              (misskey-note-display-note (misskey-render-note-at-point)))))))
 
 (defun misskey-menu--profile-p ()
   "Whether the originating view has loaded a profile."
@@ -203,7 +206,7 @@ Outside a live Misskey view, only global open commands are available."
      misskey-menu--view-state)
     ("c" "Compose" misskey-compose)]
    ["Context" :advice* misskey-menu--in-source
-    ("RET" "Link / CW" misskey-navigation-activate :inapt-if-not
+    ("RET" "Open at point" misskey-navigation-activate :inapt-if-not
      misskey-menu--activation-p)
     ("T" "Note thread" misskey-thread-at-point :inapt-if-not
      misskey-menu--note)

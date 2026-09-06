@@ -191,11 +191,7 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
            ('error (format "Unable to load profile.\n%s\n\n" message))
            (_ (if items "" "No notes returned.\n\n"))))))))
 
-(defun misskey-profile--footer (state)
-  "Return the generated profile footer for STATE."
-  (concat
-   "\nTAB next profile mode   f followers   F following"
-   (misskey-feed-default-footer state)))
+
 
 (defun misskey-profile--header-line ()
   "Return the current profile mode header line."
@@ -393,9 +389,7 @@ the account selected by current customization."
                                            :limit
                                            misskey-profile-note-limit
                                            :header-function
-                                           #'misskey-profile--frame
-                                           :footer-function
-                                           #'misskey-profile--footer)))
+                                           #'misskey-profile--frame)))
               (setf (plist-get feed :profile-reference) reference
                     (plist-get feed :profile-user) nil
                     (plist-get feed :profile-mode) 'notes
@@ -412,6 +406,7 @@ the account selected by current customization."
       (unless (plist-get state :profile-loading-p)
         (misskey-profile--request-user view)))
     view))
+
 
 (provide 'misskey-profile)
 

@@ -7,6 +7,9 @@
          (expand-file-name "misskey-test-helper"
                            (file-name-directory (or load-file-name buffer-file-name))))
 
+(require 'misskey-thread)
+(require 'misskey-profile)
+
 (defun misskey-navigation-test--note (id text &optional host)
   "Return a Note fixture with ID, TEXT, and optional author HOST."
   `((id . ,id) (text . ,text) (visibility . "public")
@@ -82,13 +85,13 @@
       (let* ((account (misskey--current-account))
              (view (misskey-test-surface :identity 'activation :input (list :account account)))
              (note (misskey-navigation-test--note "note" "https://remote.social/notes/remote"))
-             opened browsed toggled)
+             opened browsed thread)
         (insert (misskey-navigation-propertize (alist-get 'text note) note) " ")
         (add-text-properties (point-min) (point-max) (misskey-render-note-properties note))
         (cl-letf (((symbol-function 'misskey-navigation-open-url)
                    (lambda (url owner) (setq opened (list url owner))))
-                  ((symbol-function 'misskey-render-toggle-content-warning)
-                   (lambda () (setq toggled t)))
+                  ((symbol-function 'misskey-thread-open)
+                   (lambda (id owner) (setq thread (list id owner))))
                   ((symbol-function 'browse-url) (lambda (url &rest _) (setq browsed url))))
           (goto-char (point-min))
           (misskey-navigation-activate)
@@ -100,7 +103,7 @@
             (should (equal (current-kill 0) "https://remote.social/notes/remote")))
           (goto-char (1- (point-max)))
           (misskey-navigation-activate)
-          (should toggled)
+          (should (equal thread (list "note" account)))
           (misskey-navigation-browse)
           (should (equal browsed "https://example.social/notes/note")))))))
 
@@ -139,5 +142,98 @@
             (should-not opened))
         (when (and view (buffer-live-p (appkit-surface-buffer view)))
           (kill-buffer (appkit-surface-buffer view)))))))
+
+(ert-deftest misskey-navigation-displayed-note-and-exact-actor-targets
+    nil
+  (misskey-test-with-session
+    (with-temp-buffer
+      (let*
+          ((account (misskey--current-account))
+           (view
+            (misskey-test-surface :identity 'activation-targets :input
+                                  (list :account account
+                                        :revealed-content
+                                        (make-hash-table :test #'equal))))
+           (target
+            (misskey-navigation-test--note "target" "Target body"))
+           (wrapper (misskey-navigation-test--note "wrapper" nil))
+           '(misskey-navigation-test--note "quote" "Quote body")
+           opened)
+        (push (cons 'renote target) wrapper)
+        (push (cons 'renote target) quote)
+        (cl-letf
+            (((symbol-function 'misskey-thread-open)
+              (lambda (id owner) (setq opened (list 'thread id owner))))
+             ((symbol-function 'misskey-profile-open)
+              (lambda (user owner)
+                (setq opened (list 'user (misskey-user-id user) owner)))))
+          (appkit-discussion-insert-entry
+           (misskey-render-note-entry view wrapper) :width 80
+           :avatar-p nil)
+          (goto-char (point-min)) (search-forward "Target body")
+          (backward-char) (misskey-navigation-activate)
+          (should (equal opened (list 'thread "target" account)))
+          (goto-char (point-min)) (search-forward "renoted by ")
+          (misskey-navigation-activate)
+          (should (equal opened (list 'user "user-wrapper" account)))
+          (erase-buffer)
+          (misskey-render--insert-body view quote t ""
+                                       (misskey-render-note-properties
+                                        quote))
+          (goto-char (point-min)) (search-forward "Target body")
+          (backward-char) (misskey-navigation-activate)
+          (should (equal opened (list 'thread "quote" account)))
+          (goto-char (point-min)) (search-forward "Quoting ")
+          (misskey-navigation-activate)
+          (should (equal opened (list 'user "user-target" account))))))))
+
+
+(ert-deftest misskey-navigation-local-actions-do-not-leak-into-note-body ()
+  (misskey-test-with-session
+    (with-temp-buffer
+      (let* ((account (misskey--current-account))
+             (view (misskey-test-surface :identity 'activation-actions
+                                         :input (list :account account)))
+             (note (misskey-navigation-test--note "note" "Ordinary body"))
+             (file '((id . "file") (type . "image/png")
+                     (url . "https://example.social/image.png")))
+             (properties (misskey-render-note-properties note))
+             (misskey-timeline-show-media nil)
+             opened)
+        (push '(cw . "Warning") note)
+        (cl-letf (((symbol-function 'misskey-thread-open)
+                   (lambda (id _account) (setq opened (list 'thread id))))
+                  ((symbol-function 'misskey-render-toggle-content-warning)
+                   (lambda () (setq opened 'warning)))
+                  ((symbol-function 'misskey-media-open-file)
+                   (lambda (_view attachment)
+                     (setq opened (list 'media (alist-get 'id attachment))))))
+          (misskey-render--insert-content note t "" properties)
+          (goto-char (point-min))
+          (misskey-navigation-activate)
+          (should (eq opened 'warning))
+          ;; The newline immediately after a CW action is not that action.
+          (end-of-line)
+          (misskey-navigation-activate)
+          (should (equal opened '(thread "note")))
+          (forward-char)
+          (misskey-navigation-activate)
+          (should (equal opened '(thread "note")))
+          (erase-buffer)
+          (misskey-media-insert-file view file "" properties t)
+          (goto-char (point-min))
+          (misskey-navigation-activate)
+          (should (eq opened 'warning))
+          (erase-buffer)
+          (misskey-media-insert-file view file "" properties nil)
+          (goto-char (point-min))
+          (misskey-navigation-activate)
+          (should (equal opened '(media "file")))
+          (erase-buffer)
+          (insert-text-button "Local button" 'action
+                              (lambda (_) (setq opened 'button)))
+          (goto-char (point-min))
+          (misskey-navigation-activate)
+          (should (eq opened 'button)))))))
 
 (provide 'misskey-navigation-test)

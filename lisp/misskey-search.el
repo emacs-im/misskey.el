@@ -53,11 +53,6 @@
   "Return the current live Misskey search view, or nil."
   (misskey-feed-current-view 'search))
 
-(defun misskey-search--footer (state)
-  "Return the generated search footer for STATE."
-  (concat "\nQuery: " (plist-get state :query)
-          (misskey-feed-default-footer state)))
-
 (defun misskey-search--setup-view (view)
   "Initialize search VIEW and start its first request."
   (misskey-feed-setup-view view)
@@ -86,16 +81,20 @@
          (serial (cl-incf misskey-search--serial))
          (title (if tag-p (concat "#" query) query))
          (state (misskey-feed-make-state
-                 :type 'search :account target :title (format "Search: %s" title)
+                 :type 'search
+                 :account target
+                 :title (format "Search: %s" title)
                  :endpoint (if tag-p "notes/search-by-tag" "notes/search")
                  :parameters (if tag-p (list :tag query) (list :query query))
-                 :limit misskey-search-limit :footer-function #'misskey-search--footer
+                 :limit misskey-search-limit
                  :empty-message "No matching notes.")))
-    (setf (plist-get state :query) title)
-    (misskey-open-surface :app (misskey-app target) :identity (list 'search serial)
+    (misskey-open-surface :app (misskey-app target)
+                          :identity (list 'search serial)
                           :mode #'misskey-search-mode
                           :buffer-name (format "*misskey search %d: %s*" serial title)
-                          :input state :setup #'misskey-search--setup-view :select t)))
+                          :input state
+                          :setup #'misskey-search--setup-view
+                          :select t)))
 
 (defun misskey-search-tag (tag &optional account)
   "Search exact hashtag TAG using ACCOUNT and independent cursor pagination.

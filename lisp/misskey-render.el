@@ -133,15 +133,22 @@
          (guarded (and (stringp warning) (not (string-empty-p warning))))
          (text (alist-get 'text note)))
     (when guarded
-      (appkit-ui-insert-prefixed-lines
-       prefix (format "CW: %s" warning)
-       :face 'warning :properties properties))
-    (if (and guarded (not revealed))
+      (let ((start (point)))
         (appkit-ui-insert-prefixed-lines
-         prefix "[RET to reveal]" :face 'shadow :properties properties)
+         prefix (format "CW: %s" warning)
+         :face 'warning :properties properties)
+        (unless revealed
+          (appkit-ui-insert-prefixed-lines
+           prefix "[RET to reveal]" :face 'shadow :properties properties))
+        (appkit-ui-add-action
+         start (1- (point)) #'misskey-render-toggle-content-warning
+         :help-echo "Toggle content warning")))
+    (unless (and guarded (not revealed))
       (appkit-ui-insert-prefixed-lines
        prefix
-       (if (and (stringp text) (not (string-empty-p text))) (misskey-navigation-propertize text note) "(no text)")
+       (if (and (stringp text) (not (string-empty-p text)))
+           (misskey-navigation-propertize text note)
+         "(no text)")
        :properties properties))))
 
 (defun misskey-render--insert-body

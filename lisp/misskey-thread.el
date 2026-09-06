@@ -42,7 +42,7 @@
   #'misskey-navigation-activate "<mouse-2>"
   #'misskey-navigation-mouse-activate "O"
   #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
-  "w" #'misskey-navigation-copy-link "r"
+  "w" #'misskey-navigation-copy-link "t" #'misskey-thread-at-point "r"
   #'misskey-compose-reply-at-point "q"
   #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
   #'misskey-menu)
@@ -376,9 +376,7 @@ UNTIL-ID is the required cursor for an older page."
     (user-error "Current buffer is not a Misskey thread")))
 
 (defun misskey-thread-open (note-id &optional account)
-  "Open NOTE-ID's thread for ACCOUNT.
-
-ACCOUNT defaults to the account selected by current customization."
+  "Open NOTE-ID's thread for ACCOUNT.\n\nACCOUNT defaults to the account selected by current customization."
   (unless (and (stringp note-id) (not (string-empty-p note-id)))
     (user-error "Misskey note ID is required"))
   (let*
@@ -397,19 +395,26 @@ ACCOUNT defaults to the account selected by current customization."
                               (format "*misskey thread: %s*" note-id)
                               :input state :setup
                               #'misskey-thread--setup-view :select t)))
-    (unless (plist-get (misskey-thread--state view) :loading-p)
+    (unless
+        (let ((current (misskey-thread--state view)))
+          (or (plist-get current :loading-p)
+              (plist-get current :loaded-p)))
       (misskey-thread--request view 'initial))
     view))
 
+
 (defun misskey-thread-at-point ()
-  "Open the thread for the Misskey note at point." (interactive)
-  (if-let*
-      ((note (misskey-render-note-at-point))
-       (id (misskey-note-id note)) (view (appkit-current-surface)))
-      (misskey-thread-open id
-                           (plist-get (appkit-surface-model view)
-                                      :account))
-    (user-error "No Misskey note at point")))
+  "Open the thread for the displayed Misskey note at point.
+
+Pure renotes open their displayed target, not the wrapper activity.
+Quoted content keeps the containing note's thread and action context."
+  (interactive)
+  (let* ((view (misskey-navigation--view))
+         (note (misskey-note-display-note (misskey-render-note-at-point)))
+         (id (and note (misskey-note-id note))))
+    (unless id (user-error "No Misskey note at point"))
+    (misskey-read-cancel view 'navigation)
+    (misskey-thread-open id (plist-get (appkit-surface-model view) :account))))
 
 (provide 'misskey-thread)
 

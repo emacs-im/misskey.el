@@ -10,6 +10,7 @@
 
 ;;; Code:
 
+(require 'appkit-scroll)
 (require 'appkit-effect)
 (require 'appkit-command)
 (require 'appkit-surface)
@@ -568,56 +569,151 @@ Missing wire keys do not alter state; an explicitly present nil value does."
                                       #'misskey-renderer-create)
           :app app :identity identity :input input :buffer-name
           buffer-name :select select)))
+     (when (or (memq (plist-get input :type) '(timeline thread))
+               (plist-get input :feed-p))
+       (misskey--install-scroll-observer surface))
      (when setup (funcall setup surface)) surface)))
+
+(defcustom misskey-scroll-auto-load-threshold 2000
+  "Character distance from the visible end that loads another page.
+Set to nil to disable automatic pagination; manual loading remains available."
+  :type '(choice (const :tag "Disable automatic pagination" nil) integer)
+  :group 'misskey)
+
+(defvar-local misskey--scroll-observer nil
+  "Lifecycle-owned visible-end observer for this note surface.")
+
+(defun misskey--maybe-auto-load (view _window position end)
+  "Load VIEW's next page when its visible POSITION approaches END."
+  (when (and (appkit-surface-live-p view)
+             (appkit-scroll-near-end-p position end misskey-scroll-auto-load-threshold))
+    (let ((state (appkit-surface-model view)))
+      (when (and (plist-get state :loaded-p)
+                 (eq (plist-get state :phase) 'ready)
+                 (not (plist-get state :loading-p)))
+        (pcase (plist-get state :type)
+          ('timeline
+           (when (and (plist-get state :items)
+                      (not (plist-get state :older-exhausted-p)))
+             (misskey-timeline--request view 'older)))
+          ('thread
+           (when (and (plist-get state :replies)
+                      (not (plist-get state :replies-exhausted-p)))
+             (misskey-thread--request view 'older)))
+          (_
+           (when (and (plist-get state :feed-p)
+                      (plist-get state :items)
+                      (not (plist-get state :older-exhausted-p)))
+             (misskey-feed-load-more view))))))))
+
+(defun misskey--install-scroll-observer (view)
+  "Observe visible paging edges for note VIEW until its host closes."
+  (with-current-buffer (appkit-surface-buffer view)
+    (setq misskey--scroll-observer
+          (appkit-scroll-observer-install
+           view :end-function
+           (lambda (window position end)
+             (misskey--maybe-auto-load view window position end))))))
 
 (defun misskey-renderer-create (surface)
   "Create the Renderer selected by SURFACE's host type."
-  (let* ((mode (appkit-surface-type-mode (appkit-surface-type surface)))
-         (directory-p (eq mode 'misskey-directory-mode)))
-    (if (memq mode '(misskey-directory-mode misskey-notifications-mode))
-        (appkit-generated-renderer-create
-         :mount (lambda (_host _app _model)
-                  (appkit-directory-configure
-                   (appkit-directory-surface)
-                   :item-inserter (if directory-p #'misskey-directory--insert-user
-                                    #'misskey-notifications--insert-item)
-                   :activate-function (if directory-p #'misskey-directory--activate-user
-                                        #'misskey-notifications--activate-item)))
-         :merge #'appkit-projection-change-merge
-         :render (lambda (host _app model _change)
-                   (appkit-directory-reconcile
-                    (appkit-directory-surface)
-                    (if directory-p (misskey-directory--project host model)
-                      (misskey-notifications--project model)))
-                   nil)
-         :unmount #'ignore)
-      (appkit-projection-renderer-create
-       :project-all (lambda (host _app model)
-                      (if (eq (plist-get model :type) 'thread)
-                          (misskey-thread--project model (appkit-surface-app host))
-                        (misskey-render-project-notes
-                         (plist-get model :items) (appkit-surface-app host))))
-       :project-frame #'misskey-render-frame
-       :printer (lambda (_host _app row) (misskey-render-insert-row row))
-       :anchor-property appkit-discussion-key-property :no-separator-p t))))
+  (let*
+      ((mode (appkit-surface-type-mode (appkit-surface-type surface)))
+       (directory-p (eq mode 'misskey-directory-mode)))
+    (if
+        (memq mode
+              '(misskey-directory-mode misskey-notifications-mode))
+        (appkit-generated-renderer-create :mount
+                                          (lambda (_host _app _model)
+                                            (appkit-directory-configure
+                                             (appkit-directory-surface)
+                                             :item-inserter
+                                             (if directory-p
+                                                 #'misskey-directory--insert-user
+                                               #'misskey-notifications--insert-item)
+                                             :activate-function
+                                             (if directory-p
+                                                 #'misskey-directory--activate-user
+                                               #'misskey-notifications--activate-item)))
+                                          :merge
+                                          #'appkit-projection-change-merge
+                                          :render
+                                          (lambda
+                                            (host _app model _change)
+                                            (appkit-directory-reconcile
+                                             (appkit-directory-surface)
+                                             (if directory-p
+                                                 (misskey-directory--project
+                                                  host model)
+                                               (misskey-notifications--project
+                                                model)))
+                                            nil)
+                                          :unmount #'ignore)
+      (let*
+          ((renderer
+            (appkit-projection-renderer-create :project-all
+                                               (lambda
+                                                 (host _app model)
+                                                 (if
+                                                     (eq
+                                                      (plist-get model
+                                                                 :type)
+                                                      'thread)
+                                                     (misskey-thread--project
+                                                      model
+                                                      (appkit-surface-app
+                                                       host))
+                                                   (misskey-render-project-notes
+                                                    (plist-get model
+                                                               :items)
+                                                    (appkit-surface-app
+                                                     host))))
+                                               :project-frame
+                                               #'misskey-render-frame
+                                               :printer
+                                               (lambda
+                                                 (_host _app row)
+                                                 (misskey-render-insert-row
+                                                  row))
+                                               :anchor-property
+                                               appkit-discussion-key-property
+                                               :no-separator-p t))
+           (render (appkit-generated-renderer-render renderer)))
+        (setf (appkit-generated-renderer-render renderer)
+              (lambda (host app model change)
+                (prog1 (funcall render host app model change)
+                  (when misskey--scroll-observer
+                    (appkit-scroll-observer-check
+                     misskey--scroll-observer)))))
+        renderer))))
 
 (defun misskey-render-frame (_surface _app state)
   "Project STATE's host-specific frame and media failure."
-  (let* ((frame
-          (pcase (plist-get state :type)
-            ('timeline
-             (cons (misskey-timeline--frame state)
-                   (concat "\ng refresh   TAB next timeline   n/p note   "
-                           (if (plist-get state :older-exhausted-p) "older exhausted" "N older")
-                           "   ? menu   RET link/CW   O open URL   B browser   w copy link   c compose\n")))
-            ('thread
-             (cons (misskey-thread--frame state)
-                   (concat "\ng refresh   n/p note   ? menu   RET link/CW   O open URL   B browser   w copy link"
-                           (if (plist-get state :replies-exhausted-p) "   replies exhausted\n" "   N more replies\n"))))
-            (_ (cons (misskey-feed--generated-text state :header-function #'misskey-feed-default-header)
-                     (misskey-feed--generated-text state :footer-function #'misskey-feed-default-footer)))))
-         (failure (plist-get state :media-error)))
-    (if failure (cons (concat (car frame) "\nMedia: " failure "\n") (cdr frame)) frame)))
+  (let*
+      ((frame
+        (pcase (plist-get state :type)
+          ('timeline
+           (cons (misskey-timeline--frame state)
+                 (if (plist-get state :older-exhausted-p)
+                     "\nNo older notes.\n"
+                   "")))
+          ('thread
+           (cons (misskey-thread--frame state)
+                 (if (plist-get state :replies-exhausted-p)
+                     "\nNo more direct replies.\n"
+                   "")))
+          (_
+           (cons
+            (misskey-feed--generated-text state :header-function
+                                          #'misskey-feed-default-header)
+            (misskey-feed--generated-text state :footer-function
+                                          #'misskey-feed-default-footer)))))
+       (failure (plist-get state :media-error)))
+    (if failure
+        (cons (concat (car frame) "\nMedia: " failure "\n")
+              (cdr frame))
+      frame)))
+
 
 (defun misskey-app--update (context model message)
   "Commit account-owned results and return exact replies."
@@ -661,23 +757,42 @@ Missing wire keys do not alter state; an explicitly present nil value does."
 
 (defun misskey-surface-update (context model message)
   "Serialize domain handlers and their closed follow-on commands."
-  (let* ((misskey--transition-context context)
-         (misskey--transition-commands nil)
-         (timeline-p (eq (plist-get model :type) 'timeline))
-         (next (or (and timeline-p (misskey-timeline-update context model message))
-                   (misskey-surface--update context model message))))
+  (let*
+      ((misskey--transition-context context)
+       (misskey--transition-commands nil)
+       (misskey--collect-invalidations t) (misskey--invalidations nil)
+       (timeline-p (eq (plist-get model :type) 'timeline))
+       (next
+        (or
+         (and timeline-p
+              (misskey-timeline-update context model message))
+         (misskey-surface--update context model message))))
     (if (appkit-next-rejected-p next) next
-      (appkit-next
-       :model (appkit-next-model next) :render (appkit-next-render next)
-       :commands
-       (append (appkit-next-commands next)
-               (when (and timeline-p
-                          (memq (car-safe message) '(:timeline-committed :timeline-select :timeline-reveal)))
-                 (list (appkit-command-post-message
-                        :target (appkit-transition-context-parent-address context)
-                        :message (list :timeline-snapshot (misskey-timeline--snapshot (appkit-next-model next)))
-                        :delivery 'report)))
-               (nreverse misskey--transition-commands))))))
+      (let ((misskey--collect-invalidations nil))
+        (dolist (entry misskey--invalidations)
+          (misskey-invalidate-resources (car entry) (cdr entry))))
+      (appkit-next :model (appkit-next-model next)
+                   :render (appkit-next-render next)
+                   :commands (append (appkit-next-commands next)
+                                     (when
+                                         (and timeline-p
+                                              (memq (car-safe message)
+                                                    '(:timeline-committed
+                                                      :timeline-select
+                                                      :timeline-reveal)))
+                                       (list
+                                        (appkit-command-post-message :target
+                                                                     (appkit-transition-context-parent-address
+                                                                      context)
+                                                                     :message
+                                                                     (list
+                                                                      :timeline-snapshot
+                                                                      (misskey-timeline--snapshot
+                                                                       (appkit-next-model
+                                                                        next)))
+                                                                     :delivery
+                                                                     'report)))
+                                     (nreverse misskey--transition-commands))))))
 
 (defun misskey-app-update (context model message)
   "Serialize account results and batch their dependent host updates."

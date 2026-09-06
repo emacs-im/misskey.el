@@ -24,6 +24,8 @@
 (require 'misskey-core)
 (require 'misskey-note)
 
+(declare-function misskey-render-toggle-content-warning "misskey-render" ())
+
 (defcustom misskey-timeline-show-avatars t
   "When non-nil, fetch and display Misskey author avatars.
 
@@ -167,7 +169,11 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
        (image
         (and (not hidden-p) (misskey-media-preview-image view file)))
        (alt (misskey-media-alt-text file)))
-    (cond (hidden-p (insert "[sensitive media]"))
+    (cond (hidden-p
+           (insert "[sensitive media]")
+           (appkit-ui-add-action
+            start (point) #'misskey-render-toggle-content-warning
+            :help-echo "Reveal sensitive media"))
           (image
            (appkit-media-insert-image-slices image
                                              (lambda ()
