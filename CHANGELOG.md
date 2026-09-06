@@ -30,3 +30,8 @@
 - Preview demands now share a bounded account queue, so large cold-cache pages do not exhaust the App's active Effect limit. Completed or failed previews release capacity for waiting resources.
 - Stopping a publishing Compose Surface retires its operation and leaves the retained draft editable; cancellation-time and late results cannot resume the reply chain.
 - Changing draft visibility advances its semantic generation exactly once; setting the same visibility leaves the draft unchanged.
+
+### Changed
+
+- Shared Note deduplication across feeds, timelines, and threads; directory and notification projections now build ordered rows in linear time.
+- Consolidated transport startup failures, compose request completion, action-lane settlement, and media transitions without changing cancellation or write-outcome semantics. Removed unused Plz response adapters and redundant view helpers.

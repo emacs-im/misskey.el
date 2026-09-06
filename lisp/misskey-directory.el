@@ -174,113 +174,62 @@
 
 (defun misskey-directory--project (view state)
   "Project relationship STATE for VIEW into Appkit directory entries."
-  (let*
-      ((kind (plist-get state :kind))
-       (subject (plist-get state :subject-user))
-       (phase (plist-get state :phase))
-       (message (plist-get state :message))
-       (items (plist-get state :items))
-       (section-key
-        (list 'relationship kind (misskey-user-id subject)))
-       (entries
-        (list
-         (appkit-directory-entry-create :key section-key :role
-                                        'section :label
-                                        (format "%s · %s"
-                                                (misskey-directory--kind-label
-                                                 kind)
-                                                (misskey-user-label
-                                                 subject))))))
+  (let* ((kind (plist-get state :kind))
+         (subject (plist-get state :subject-user))
+         (phase (plist-get state :phase))
+         (message (plist-get state :message))
+         (items (plist-get state :items))
+         (section-key (list 'relationship kind (misskey-user-id subject)))
+         (entries
+          (list
+           (appkit-directory-entry-create
+            :key section-key :role 'section
+            :label (format "%s · %s" (misskey-directory--kind-label kind)
+                           (misskey-user-label subject))))))
     (when (memq phase '(initial refresh older error))
-      (setq entries
-            (nconc entries
-                   (list
-                    (appkit-directory-entry-create :key
-                                                   (list section-key
-                                                         'status)
-                                                   :role 'note
-                                                   :section-key
-                                                   section-key :indent
-                                                   2 :face
-                                                   (if
-                                                       (eq phase
-                                                           'error)
-                                                       'error
-                                                     'shadow)
-                                                   :label
-                                                   (pcase phase
-                                                     ('initial
-                                                      "Loading users...")
-                                                     ('refresh
-                                                      "Refreshing users...")
-                                                     ('older
-                                                      "Loading more users...")
-                                                     ('error
-                                                      (format
-                                                       "Unable to load users: %s"
-                                                       message))))))))
+      (push
+       (appkit-directory-entry-create
+        :key (list section-key 'status) :role 'note
+        :section-key section-key :indent 2
+        :face (if (eq phase 'error) 'error 'shadow)
+        :label (pcase phase
+                 ('initial "Loading users...")
+                 ('refresh "Refreshing users...")
+                 ('older "Loading more users...")
+                 ('error (format "Unable to load users: %s" message))))
+       entries))
     (dolist (relationship items)
-      (let*
-          ((user
-            (misskey-directory--relationship-user state relationship))
-           (user-id (misskey-user-id user))
-           (following-p
-            (misskey-user-state-value (appkit-surface-app view)
-                                      user-id :following-p
-                                      (eq
-                                       (alist-get 'isFollowing user) t))))
-        (setq entries
-              (nconc entries
-                     (list
-                      (appkit-directory-entry-create :key user-id
-                                                     :role 'item
-                                                     :section-key
-                                                     section-key
-                                                     :item-p t
-                                                     :payload user
-                                                     :stamp
-                                                     (list user
-                                                           following-p)
-                                                     :help-echo
-                                                     "RET: Open Misskey profile"
-                                                     :properties
-                                                     (list
-                                                      misskey-user-property
-                                                      user
-                                                      misskey-user-id-property
-                                                      user-id)))))))
+      (let* ((user (misskey-directory--relationship-user state relationship))
+             (user-id (misskey-user-id user))
+             (following-p
+              (misskey-user-state-value
+               (appkit-surface-app view) user-id :following-p
+               (eq (alist-get 'isFollowing user) t))))
+        (push
+         (appkit-directory-entry-create
+          :key user-id :role 'item :section-key section-key :item-p t
+          :payload user :stamp (list user following-p)
+          :help-echo "RET: Open Misskey profile"
+          :properties (list misskey-user-property user
+                            misskey-user-id-property user-id))
+         entries)))
     (unless (or items (memq phase '(initial refresh)))
-      (setq entries
-            (nconc entries
-                   (list
-                    (appkit-directory-entry-create :key
-                                                   (list section-key
-                                                         'empty)
-                                                   :role 'note
-                                                   :section-key
-                                                   section-key :indent
-                                                   2 :face 'shadow
-                                                   :label
-                                                   "No users returned.")))))
+      (push
+       (appkit-directory-entry-create
+        :key (list section-key 'empty) :role 'note
+        :section-key section-key :indent 2 :face 'shadow
+        :label "No users returned.")
+       entries))
     (when items
-      (setq entries
-            (nconc entries
-                   (list
-                    (appkit-directory-entry-create :key
-                                                   (list section-key
-                                                         'footer)
-                                                   :role 'note
-                                                   :section-key
-                                                   section-key :indent
-                                                   2 :face 'shadow
-                                                   :label
-                                                   (if
-                                                       (plist-get
-                                                        state
-                                                        :older-exhausted-p)
-                                                       "No more users.  g refresh"
-                                                     "N load more   g refresh"))))))
-    entries))
+      (push
+       (appkit-directory-entry-create
+        :key (list section-key 'footer) :role 'note
+        :section-key section-key :indent 2 :face 'shadow
+        :label (if (plist-get state :older-exhausted-p)
+                   "No more users.  g refresh"
+                 "N load more   g refresh"))
+       entries))
+    (nreverse entries)))
 
 (defun misskey-directory--handle-error (view state failure)
   "Install relationship FAILURE in VIEW STATE."
@@ -321,7 +270,7 @@ OBSERVATION versions canonical entity merges."
               (plist-get state :message) nil
               (plist-get state :loaded-p) t)
         (setf (plist-get state :older-exhausted-p)
-              (if (eq phase 'older) (null new) (null relationships)))
+              (null new))
         (misskey-dispatch view
                           (list :render
                                 (appkit-projection-change-create

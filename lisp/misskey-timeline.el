@@ -15,7 +15,6 @@
 (require 'appkit-core)
 (require 'appkit-projection)
 (require 'appkit-discussion)
-(require 'appkit-projection)
 (require 'appkit-presentation)
 (require 'appkit-position)
 (require 'appkit-ui)
@@ -67,7 +66,7 @@
 (defun misskey-timeline--make-state (account kind)
   "Return fresh Surface-owned state for ACCOUNT's timeline KIND."
   (list :type 'timeline :account account :kind kind :states nil :serial 0
-        :request-id nil :request-spec nil :observation nil
+        :request-id nil :request-parameters nil :observation nil
         :items nil :phase 'initial :message nil :loading-p nil :loaded-p nil
         :position nil :older-exhausted-p nil
         :revealed-content (make-hash-table :test #'equal)))
@@ -195,18 +194,6 @@
                                                        :position
                                                        'preserve))))))
 
-(defun misskey-timeline--new-notes (current candidates)
-  "Return CANDIDATES whose IDs do not occur in CURRENT."
-  (let ((seen (make-hash-table :test #'equal))
-        result)
-    (dolist (note current)
-      (puthash (misskey-note-id note) t seen))
-    (dolist (note candidates (nreverse result))
-      (let ((id (misskey-note-id note)))
-        (unless (gethash id seen)
-          (puthash id t seen)
-          (push note result))))))
-
 (defun misskey-timeline--request (view phase)
   "Send one timeline PHASE intent to VIEW."
   (misskey-timeline--validate-request
@@ -309,11 +296,11 @@
   (misskey-timeline--validate-request model phase limit)
   (let* ((next (copy-sequence model))
          (serial (1+ (plist-get model :serial)))
-         (cursor (and (eq phase 'older)
-                      (misskey-note-id (car (last (plist-get model :items)))))))
+         (cursor (and (eq phase 'older) (misskey-note-id (car (last (plist-get model :items)))))))
     (setf (plist-get next :serial) serial
           (plist-get next :request-id) serial
-          (plist-get next :request-spec) (list phase limit cursor)
+          (plist-get next :request-parameters) (append (list :limit limit :allowPartial t)
+                                                       (and cursor (list :untilId cursor)))
           (plist-get next :observation) nil
           (plist-get next :phase) phase
           (plist-get next :loading-p) t
@@ -335,22 +322,10 @@
       (appkit-cancellation-create
        :kind 'transport :cancel (lambda () (misskey-http-cancel request))))))
 
-(defun misskey-timeline--effect-success (input payload)
-  "Map the owned INPUT and PAYLOAD to a timeline result message."
-  (list :timeline-received (plist-get input :request-id) payload))
-
-(defun misskey-timeline--effect-failure (input failure)
-  "Map the owned INPUT and FAILURE to a timeline error message."
-  (list :timeline-failed (plist-get input :request-id) failure))
-
 (defun misskey-timeline--fail (model failure)
   "Return settled timeline state for a failed page without discarding notes."
-  (let ((next (copy-sequence model)))
-    (setf (plist-get next :phase) 'error
-          (plist-get next :message) failure
-          (plist-get next :loading-p) nil
-          (plist-get next :request-id) nil
-          (plist-get next :request-spec) nil)
+  (let ((next (misskey-timeline--retire-request model)))
+    (setf (plist-get next :phase) 'error (plist-get next :message) failure)
     (appkit-next :model next
                  :render (appkit-projection-change-create :frame-p t :position 'preserve))))
 
@@ -358,28 +333,24 @@
   "Install NOTES after their account state has committed."
   (let* ((phase (plist-get model :phase))
          (current (plist-get model :items))
-         (new-notes (if (eq phase 'older) (misskey-timeline--new-notes current notes) notes))
-         (next (copy-sequence model)))
+         (new-notes (if (eq phase 'older) (misskey-note-new-notes current notes) notes))
+         (next (misskey-timeline--retire-request model)))
     (setf (plist-get next :items)
           (pcase phase
             ('initial notes)
-            ('refresh (append notes (misskey-timeline--new-notes notes current)))
+            ('refresh (append notes (misskey-note-new-notes notes current)))
             ('older (append current new-notes)))
           (plist-get next :phase) 'ready
           (plist-get next :message) nil
-          (plist-get next :loading-p) nil
-          (plist-get next :loaded-p) t
-          (plist-get next :request-id) nil
-          (plist-get next :request-spec) nil)
+          (plist-get next :loaded-p) t)
     (unless (eq phase 'older)
       (setf (plist-get next :revealed-content) (make-hash-table :test #'equal)))
     (pcase phase
       ('initial (setf (plist-get next :older-exhausted-p) (null notes)))
       ('older (setf (plist-get next :older-exhausted-p) (null new-notes))))
     (appkit-next
-     :model next
-     :render (appkit-projection-change-create
-              :full-p t :frame-p t :position (if (eq phase 'initial) 'first 'preserve))
+     :model next :render (appkit-projection-change-create
+                          :full-p t :frame-p t :position (if (eq phase 'initial) 'first 'preserve))
      :commands (and new-notes (delq nil (list (misskey-media-prefetch-command context next new-notes)))))))
 
 (defun misskey-timeline--select (context model kind refresh-p position limit)
@@ -387,18 +358,12 @@
   (misskey-timeline--kind-spec kind)
   (let ((next model) (changed (not (eq kind (plist-get model :kind)))) commands)
     (when changed
-      (let* ((saved (copy-sequence model))
+      (let* ((saved (misskey-timeline--snapshot model))
              (states (assq-delete-all kind (copy-sequence (plist-get model :states))))
              (target (alist-get kind (plist-get model :states))))
-        (setf (plist-get saved :states) nil
-              (plist-get saved :position) position
-              (plist-get saved :loading-p) nil
-              (plist-get saved :request-id) nil
-              (plist-get saved :request-spec) nil)
-        (when (plist-get model :loading-p)
-          (setf (plist-get saved :phase) (if (plist-get saved :loaded-p) 'ready 'initial)))
-        (setq next (copy-sequence (or target (misskey-timeline--make-state
-                                              (plist-get model :account) kind))))
+        (setf (plist-get saved :states) nil (plist-get saved :position) position)
+        (setq next (if target (copy-sequence target)
+                     (misskey-timeline--make-state (plist-get model :account) kind)))
         (setf (plist-get next :states) (cons (cons (plist-get model :kind) saved) states)
               (plist-get next :address) (plist-get model :address)
               (plist-get next :serial) (plist-get model :serial)
@@ -406,12 +371,11 @@
         (setq commands (list (appkit-command-cancel-effect misskey-timeline--request-key)
                              (appkit-command-cancel-effect 'misskey-media-acquire)
                              (appkit-command-cancel-effect 'misskey-media-present)))))
-    (let ((result
-           (if (and (not (plist-get next :loading-p))
-                    (or refresh-p (not (plist-get next :loaded-p))))
-               (misskey-timeline--begin context next
-                                        (if (plist-get next :loaded-p) 'refresh 'initial) limit)
-             (appkit-next :model next :render appkit-render-none))))
+    (let ((result (if (and (not (plist-get next :loading-p))
+                           (or refresh-p (not (plist-get next :loaded-p))))
+                      (misskey-timeline--begin context next
+                                               (if (plist-get next :loaded-p) 'refresh 'initial) limit)
+                    (appkit-next :model next :render appkit-render-none))))
       (appkit-next
        :model (appkit-next-model result)
        :render (if changed
@@ -421,34 +385,34 @@
        :commands (append commands (appkit-next-commands result))))))
 
 (defun misskey-timeline-update (context model message)
-  "Reduce timeline domain MESSAGE against Surface-owned MODEL."
-  (pcase message
-    (`(:timeline-request ,phase ,limit)
-     (condition-case err (misskey-timeline--begin context model phase limit)
-       (user-error (appkit-next-reject (error-message-string err)))))
-    (`(:timeline-select ,kind ,refresh-p ,position ,limit)
-     (misskey-timeline--select context model kind refresh-p position limit))
-    (`(:timeline-observed ,request-id ,observation)
-     (if (not (equal request-id (plist-get model :request-id)))
-         (appkit-next-reject 'superseded-timeline-request)
-       (let* ((next (copy-sequence model))
-              (spec (plist-get model :request-spec))
-              (input (list :request-id request-id :account (plist-get model :account)
-                           :owner (appkit-current-surface)
-                           :endpoint (misskey-timeline--endpoint (plist-get model :kind))
-                           :parameters (append (list :limit (nth 1 spec) :allowPartial t)
-                                               (and (nth 2 spec) (list :untilId (nth 2 spec)))))))
+  "Reduce timeline MESSAGE, fencing all page replies before dispatch."
+  (if (and (memq (car-safe message) '(:timeline-observed :timeline-received
+                                                         :timeline-committed :timeline-failed))
+           (not (equal (cadr message) (plist-get model :request-id))))
+      (appkit-next-reject 'superseded-timeline-request)
+    (pcase message
+      (`(:timeline-request ,phase ,limit)
+       (condition-case err (misskey-timeline--begin context model phase limit)
+         (user-error (appkit-next-reject (error-message-string err)))))
+      (`(:timeline-select ,kind ,refresh-p ,position ,limit)
+       (misskey-timeline--select context model kind refresh-p position limit))
+      (`(:timeline-observed ,request-id ,observation)
+       (let ((next (copy-sequence model)))
          (setf (plist-get next :observation) observation)
          (appkit-next
           :model next :render appkit-render-none
-          :commands (list (appkit-command-start-effect
-                           (appkit-effect-create :key misskey-timeline--request-key :input input
-                                                 :start #'misskey-timeline--effect-start
-                                                 :success #'misskey-timeline--effect-success
-                                                 :failure #'misskey-timeline--effect-failure)))))))
-    (`(:timeline-received ,request-id ,payload)
-     (if (not (equal request-id (plist-get model :request-id)))
-         (appkit-next-reject 'superseded-timeline-request)
+          :commands
+          (list (appkit-command-start-effect
+                 (appkit-effect-create
+                  :key misskey-timeline--request-key
+                  :input (list :request-id request-id :account (plist-get model :account)
+                               :owner (appkit-current-surface)
+                               :endpoint (misskey-timeline--endpoint (plist-get model :kind))
+                               :parameters (plist-get model :request-parameters))
+                  :start #'misskey-timeline--effect-start
+                  :success (lambda (input payload) (list :timeline-received (plist-get input :request-id) payload))
+                  :failure (lambda (input failure) (list :timeline-failed (plist-get input :request-id) failure))))))))
+      (`(:timeline-received ,request-id ,payload)
        (condition-case err
            (let ((notes (misskey-note-validate-list payload)))
              (appkit-next
@@ -457,41 +421,38 @@
                                :target (appkit-transition-context-parent-address context)
                                :message (list :timeline-merge request-id (plist-get model :observation) notes)
                                :reply-correlation request-id :delivery 'report))))
-         (error (misskey-timeline--fail model (error-message-string err))))))
-    (`(:timeline-committed ,request-id ,notes)
-     (if (equal request-id (plist-get model :request-id))
-         (misskey-timeline--install context model notes)
-       (appkit-next-reject 'superseded-timeline-request)))
-    (`(:timeline-failed ,request-id ,failure)
-     (if (equal request-id (plist-get model :request-id))
-         (misskey-timeline--fail model failure)
-       (appkit-next-reject 'superseded-timeline-request)))
-    (`(:timeline-reveal ,key)
-     (let* ((next (copy-sequence model))
-            (table (copy-hash-table (plist-get model :revealed-content))))
-       (if (gethash key table) (remhash key table) (puthash key t table))
-       (setf (plist-get next :revealed-content) table)
-       (appkit-next
-        :model next :render (appkit-projection-change-create :keys (list key) :position key)
-        :commands (when (gethash key table)
-                    (delq nil (list (misskey-media-prefetch-command
-                                     context next
-                                     (cl-remove-if-not (lambda (note) (equal key (misskey-note-id note)))
-                                                       (plist-get model :items)))))))))
-    (_ nil)))
+         (error (misskey-timeline--fail model (error-message-string err)))))
+      (`(:timeline-committed ,_request-id ,notes) (misskey-timeline--install context model notes))
+      (`(:timeline-failed ,_request-id ,failure) (misskey-timeline--fail model failure))
+      (`(:timeline-reveal ,key)
+       (let* ((next (copy-sequence model))
+              (table (copy-hash-table (plist-get model :revealed-content))))
+         (if (gethash key table) (remhash key table) (puthash key t table))
+         (setf (plist-get next :revealed-content) table)
+         (appkit-next
+          :model next :render (appkit-projection-change-create :keys (list key) :position key)
+          :commands (when (gethash key table)
+                      (delq nil (list (misskey-media-prefetch-command
+                                       context next
+                                       (cl-remove-if-not (lambda (note) (equal key (misskey-note-id note)))
+                                                         (plist-get model :items))))))))))))
 
 (defun misskey-timeline--snapshot (model)
   "Return a settled page snapshot, never a second mutable timeline owner."
-  (let ((snapshot (copy-sequence model)))
-    (setf (plist-get snapshot :address) nil
-          (plist-get snapshot :request-id) nil
-          (plist-get snapshot :request-spec) nil
-          (plist-get snapshot :observation) nil
-          (plist-get snapshot :loading-p) nil
-          (plist-get snapshot :media-intent) nil)
+  (let ((snapshot (misskey-timeline--retire-request model)))
+    (setf (plist-get snapshot :address) nil (plist-get snapshot :media-intent) nil)
     (when (plist-get model :loading-p)
       (setf (plist-get snapshot :phase) (if (plist-get model :loaded-p) 'ready 'initial)))
     snapshot))
+
+(defun misskey-timeline--retire-request (model)
+  "Copy MODEL without any authority or inputs from its finished request."
+  (let ((next (copy-sequence model)))
+    (setf (plist-get next :request-id) nil
+          (plist-get next :request-parameters) nil
+          (plist-get next :observation) nil
+          (plist-get next :loading-p) nil)
+    next))
 
 (provide 'misskey-timeline)
 

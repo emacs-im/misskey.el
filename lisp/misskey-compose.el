@@ -51,10 +51,6 @@
 (defconst misskey-compose--max-attachments 16
   "Maximum number of Drive files attached to one Misskey note.")
 
-(defun misskey-compose--set-body-read-only (read-only)
-  "Set the current compose body READ-ONLY state."
-  (setq-local buffer-read-only (and read-only t)))
-
 (defvar-keymap misskey-compose-mode-map
   :doc "Keymap for `misskey-compose-mode'."
   "C-c C-c" #'misskey-compose-send
@@ -308,12 +304,30 @@ Interactively, select one of the current part's attachments."
               (appkit-surface-live-p (car token))
               (eq (appkit-current-surface) (car token))))))
 
-(defun misskey-compose--accept-callback (buffer token)
-  "Accept a callback for BUFFER and TOKEN, clearing its completed request."
-  (when (misskey-compose--submission-current-p buffer token)
-    (with-current-buffer buffer
-      (setq-local misskey-compose--request nil))
-    t))
+(defun misskey-compose--start-request (buffer token start callback)
+  "Call START with guarded result handlers for BUFFER's TOKEN.
+CALLBACK receives successful payloads; failures restore the draft.  A
+synchronous result must not overwrite the next request's cancellation handle."
+  (let (callback-ran-p request)
+    (cl-flet ((accept ()
+                (setq callback-ran-p t)
+                (when (misskey-compose--submission-current-p buffer token)
+                  (with-current-buffer buffer
+                    (setq-local misskey-compose--request nil))
+                  t)))
+      (setq request
+            (funcall start
+                     (lambda (payload)
+                       (when (accept)
+                         (funcall callback payload)))
+                     (lambda (failure)
+                       (when (accept)
+                         (misskey-compose--handle-error buffer token failure))))))
+    (when (and request (not callback-ran-p)
+               (misskey-compose--submission-current-p buffer token))
+      (with-current-buffer buffer
+        (setq-local misskey-compose--request request)))
+    request))
 
 (defun misskey-compose--handle-success (buffer token note-id)
   "Finish BUFFER's TOKEN after creating the final note NOTE-ID."
@@ -331,20 +345,10 @@ Interactively, select one of the current part's attachments."
       (setq-local misskey-compose--submission-token nil
                   misskey-compose--request nil)
       (appkit-compose-operation-finish (appkit-compose-operation-owner))
-      (misskey-compose--unlock-bodies)
+      (setq-local buffer-read-only nil)
       (misskey-compose--refresh))
     (message "%s" failure))
   nil)
-
-(defun misskey-compose--remember-request
-    (buffer token request callback-ran-p)
-  "Remember REQUEST for BUFFER's TOKEN unless its callback already ran."
-  (when (and request
-             (not callback-ran-p)
-             (misskey-compose--submission-current-p buffer token))
-    (with-current-buffer buffer
-      (setq-local misskey-compose--request request)))
-  request)
 
 (defun misskey-compose--abort-submission (buffer token)
   "Cancel BUFFER's request and reclaim local state owned by TOKEN.
@@ -358,7 +362,7 @@ Unlike result callbacks, teardown remains valid after the Surface is revoked."
                       misskey-compose--request nil)
           (unwind-protect
               (progn
-                (misskey-compose--unlock-bodies)
+                (setq-local buffer-read-only nil)
                 (appkit-compose-operation-finish
                  (appkit-compose-operation-owner))
                 (when (and (appkit-surface-live-p (car token))
@@ -375,14 +379,6 @@ Unlike result callbacks, teardown remains valid after the Surface is revoked."
                   misskey-compose--request nil)
       (when request
         (misskey-http-cancel request)))))
-
-(defun misskey-compose--lock-bodies ()
-  "Mark the compose surface read-only while a publish request is in flight."
-  (misskey-compose--set-body-read-only t))
-
-(defun misskey-compose--unlock-bodies ()
-  "Restore the compose surface to an editable state."
-  (misskey-compose--set-body-read-only nil))
 
 (cl-defun misskey-compose--update-submit
     (buffer &key (label nil label-p) (progress nil progress-p))
@@ -488,62 +484,48 @@ Unlike result callbacks, teardown remains valid after the Surface is revoked."
   "Publish ITEM for ACCOUNT in BUFFER under SUBMISSION."
   (let* ((index (plist-get submission :index))
          (total (length (plist-get submission :items)))
-         (token (plist-get submission :token))
-         callback-ran-p
-         request)
+         (token (plist-get submission :token)))
     (misskey-compose--update-submit
      buffer
      :label (format "Publishing note %d/%d..." (1+ index) total)
      :progress nil)
-    (setq
-     request
-     (misskey-http-post
-      "notes/create"
-      (misskey-compose--note-parameters submission item)
-      (lambda (payload)
-        (setq callback-ran-p t)
-        (when (misskey-compose--accept-callback buffer token)
-          (if-let* ((note-id (misskey-compose--created-note-id payload)))
-              (let* ((next-index (1+ index))
-                     (remaining
-                      (cl-subseq (plist-get submission :items) next-index)))
-                (if remaining
-                    (let ((next (copy-sequence submission)))
-                      (misskey-compose--persist-confirmed
-                       buffer token remaining note-id)
-                      (setf (plist-get next :index) next-index
-                            (plist-get next :previous-id) note-id)
-                      (misskey-compose--send-next buffer account next))
-                  (misskey-compose--handle-success buffer token note-id)))
-            (misskey-compose--handle-error
-             buffer token
-             (concat
-              "Misskey returned success without a nonempty created note ID; "
-              "the remote outcome is unknown")))))
-      :errback
-      (lambda (error-message)
-        (setq callback-ran-p t)
-        (when (misskey-compose--accept-callback buffer token)
-          (misskey-compose--handle-error buffer token error-message)))
-      :account account
-      :owner (plist-get submission :owner)))
-    (misskey-compose--remember-request
-     buffer token request callback-ran-p)))
+    (misskey-compose--start-request
+     buffer token
+     (lambda (callback errback)
+       (misskey-http-post
+        "notes/create" (misskey-compose--note-parameters submission item)
+        callback :errback errback :account account
+        :owner (plist-get submission :owner)))
+     (lambda (payload)
+       (if-let* ((note-id (misskey-compose--created-note-id payload)))
+           (let* ((next-index (1+ index))
+                  (remaining
+                   (cl-subseq (plist-get submission :items) next-index)))
+             (if remaining
+                 (let ((next (copy-sequence submission)))
+                   (misskey-compose--persist-confirmed
+                    buffer token remaining note-id)
+                   (setf (plist-get next :index) next-index
+                         (plist-get next :previous-id) note-id)
+                   (misskey-compose--send-next buffer account next))
+               (misskey-compose--handle-success buffer token note-id)))
+         (misskey-compose--handle-error
+          buffer token
+          (concat
+           "Misskey returned success without a nonempty created note ID; "
+           "the remote outcome is unknown")))))))
 
 (defun misskey-compose--upload-attachment
     (buffer account submission note-index attachment-index)
   "Upload ACCOUNT's SUBMISSION attachment at ATTACHMENT-INDEX.
 BUFFER's NOTE-INDEX selects the draft entry."
   (let* ((item (nth note-index (plist-get submission :items)))
-         (attachment (nth attachment-index
-                          (plist-get item :attachments)))
+         (attachment (nth attachment-index (plist-get item :attachments)))
          (path (plist-get attachment :path))
          (name (file-name-nondirectory path))
          (count (length (plist-get item :attachments)))
          (index (1+ attachment-index))
-         (token (plist-get submission :token))
-         callback-ran-p
-         request)
+         (token (plist-get submission :token)))
     (when (file-remote-p path)
       (user-error "Remote attachment paths are unsupported: %s" path))
     (misskey-compose--update-submit
@@ -552,38 +534,28 @@ BUFFER's NOTE-INDEX selects the draft entry."
                 (format "Uploading %s %d/%d" name index count)
               (format "Uploading %s..." name))
      :progress nil)
-    (setq
-     request
-     (misskey-http-upload-file
-      path
-      (lambda (payload)
-        (setq callback-ran-p t)
-        (when (misskey-compose--accept-callback buffer token)
-          (if-let* ((drive-id (misskey-compose--drive-file-id payload)))
-              (let ((items
-                     (misskey-compose--install-drive-id
-                      submission note-index attachment-index drive-id)))
-                (misskey-compose--persist-items
-                 buffer token (cl-subseq items note-index))
-                (misskey-compose--send-next buffer account submission))
-            (misskey-compose--handle-error
-             buffer token
-             (concat
-              "Misskey returned success without a nonempty uploaded file ID; "
-              "the remote outcome is unknown")))))
-      :errback
-      (lambda (error-message)
-        (setq callback-ran-p t)
-        (when (misskey-compose--accept-callback buffer token)
-          (misskey-compose--handle-error buffer token error-message)))
-      :account account
-      :owner (plist-get submission :owner)
-      :progress
-      (lambda (event)
-        (misskey-compose--upload-progress
-         buffer name index count event))))
-    (misskey-compose--remember-request
-     buffer token request callback-ran-p)))
+    (misskey-compose--start-request
+     buffer token
+     (lambda (callback errback)
+       (misskey-http-upload-file
+        path callback :errback errback :account account
+        :owner (plist-get submission :owner)
+        :progress (lambda (event)
+                    (misskey-compose--upload-progress
+                     buffer name index count event))))
+     (lambda (payload)
+       (if-let* ((drive-id (misskey-compose--drive-file-id payload)))
+           (let ((items
+                  (misskey-compose--install-drive-id
+                   submission note-index attachment-index drive-id)))
+             (misskey-compose--persist-items
+              buffer token (cl-subseq items note-index))
+             (misskey-compose--send-next buffer account submission))
+         (misskey-compose--handle-error
+          buffer token
+          (concat
+           "Misskey returned success without a nonempty uploaded file ID; "
+           "the remote outcome is unknown")))))))
 
 (defun misskey-compose--send-next (buffer account submission)
   "Continue publishing SUBMISSION for ACCOUNT in BUFFER."
@@ -671,7 +643,7 @@ reuse Drive files and never recreate confirmed notes."
                                     (lambda ()
                                       (misskey-compose--abort-submission
                                        buffer token)))
-    (misskey-compose--refresh) (misskey-compose--lock-bodies)
+    (misskey-compose--refresh) (setq-local buffer-read-only t)
     (message "%s" label)
     (condition-case err
         (misskey-compose--send-next buffer account
@@ -688,7 +660,7 @@ reuse Drive files and never recreate confirmed notes."
          (setq-local misskey-compose--submission-token nil
                      misskey-compose--request nil)
          (appkit-compose-operation-finish (appkit-compose-operation-owner))
-         (misskey-compose--unlock-bodies) (misskey-compose--refresh))
+         (setq-local buffer-read-only nil) (misskey-compose--refresh))
        (signal (car err) (cdr err))))))
 
 (defun misskey-compose--note-at-point ()
@@ -696,37 +668,27 @@ reuse Drive files and never recreate confirmed notes."
   (or (get-text-property (point) misskey-note-property)
       (user-error "No Misskey note at point")))
 
+(defun misskey-compose--open-at-point (target-key)
+  "Open a draft targeting the displayed note at point with TARGET-KEY."
+  (let* ((note (misskey-note-display-note (misskey-compose--note-at-point)))
+         (view (appkit-current-surface))
+         (account (and (appkit-surface-live-p view)
+                       (plist-get (appkit-surface-model view) :account))))
+    (unless note
+      (user-error "The displayed Misskey note was deleted"))
+    (misskey-compose-open account target-key (misskey-note-id note)
+                          :target-label
+                          (misskey-user-label (misskey-note-user note)))))
+
 (defun misskey-compose-reply-at-point ()
   "Open a reply draft for the displayed Misskey note at point."
   (interactive)
-  (let*
-      ((raw-note (misskey-compose--note-at-point))
-       (note (misskey-note-display-note raw-note))
-       (view (appkit-current-surface))
-       (account
-        (and (appkit-surface-live-p view)
-             (plist-get (appkit-surface-model view) :account))))
-    (unless note
-      (user-error "The displayed Misskey note was deleted"))
-    (misskey-compose-open account :reply-id (misskey-note-id note)
-                          :target-label
-                          (misskey-user-label (misskey-note-user note)))))
+  (misskey-compose--open-at-point :reply-id))
 
 (defun misskey-compose-quote-at-point ()
   "Open a quote draft for the displayed Misskey note at point."
   (interactive)
-  (let*
-      ((raw-note (misskey-compose--note-at-point))
-       (note (misskey-note-display-note raw-note))
-       (view (appkit-current-surface))
-       (account
-        (and (appkit-surface-live-p view)
-             (plist-get (appkit-surface-model view) :account))))
-    (unless note
-      (user-error "The displayed Misskey note was deleted"))
-    (misskey-compose-open account :renote-id (misskey-note-id note)
-                          :target-label
-                          (misskey-user-label (misskey-note-user note)))))
+  (misskey-compose--open-at-point :renote-id))
 
 (defun misskey-compose-cancel ()
   "Cancel the active request, if any, and kill the current draft."

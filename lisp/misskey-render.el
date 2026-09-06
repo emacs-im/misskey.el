@@ -17,7 +17,6 @@
 (require 'appkit-core)
 (require 'appkit-discussion)
 (require 'appkit-projection)
-(require 'appkit-projection)
 (require 'appkit-ui)
 (require 'appkit-presentation)
 (require 'misskey-core)
@@ -32,7 +31,7 @@
   "Return VIEW's content-warning reveal table."
   (let
       ((table
-        (and (and (appkit-surface-p view) (appkit-surface-alive-p view))
+        (and (appkit-surface-p view) (appkit-surface-alive-p view)
              (plist-get (appkit-surface-model view) :revealed-content))))
     (unless (hash-table-p table)
       (error "Misskey note view has no content-warning state"))
@@ -67,16 +66,11 @@
       (misskey-user-label user)
     "(deleted note)"))
 
-(defun misskey-render--user-properties (user)
-  "Return durable text properties for USER's visible author span."
-  (list misskey-user-property user
-        misskey-user-id-property (misskey-user-id user)))
-
 (defun misskey-render--user-label (user)
   "Return USER's label carrying only USER's author properties."
-  (apply #'propertize
-         (misskey-user-label user)
-         (misskey-render--user-properties user)))
+  (propertize (misskey-user-label user)
+              misskey-user-property user
+              misskey-user-id-property (misskey-user-id user)))
 
 (defun misskey-render--insert-heading (note)
   "Insert NOTE's displayed author heading."
@@ -98,6 +92,7 @@
   (let* ((display-note (misskey-note-display-note note))
          (visibility (alist-get 'visibility display-note))
          (files (alist-get 'files display-note))
+         (file-count (if (listp files) (length files) 0))
          (my-reaction
           (misskey-render--note-state-value
            app display-note :my-reaction 'myReaction))
@@ -125,31 +120,27 @@
                  (not (string-empty-p my-reaction))
                  (format "your reaction %s" my-reaction))
             (and favorited-p "favorited")
-            (and (listp files)
-                 (> (length files) 0)
+            (and (> file-count 0)
                  (format "%d attachment%s"
-                         (length files)
-                         (if (= (length files) 1) "" "s")))))
+                         file-count
+                         (if (= file-count 1) "" "s")))))
      " · ")))
 
 (defun misskey-render--insert-content (note revealed prefix properties)
   "Insert NOTE content using REVEALED, PREFIX, and PROPERTIES."
-  (let ((warning (alist-get 'cw note))
-        (text (alist-get 'text note)))
-    (when (and (stringp warning) (not (string-empty-p warning)))
+  (let* ((warning (alist-get 'cw note))
+         (guarded (and (stringp warning) (not (string-empty-p warning))))
+         (text (alist-get 'text note)))
+    (when guarded
       (appkit-ui-insert-prefixed-lines
        prefix (format "CW: %s" warning)
        :face 'warning :properties properties))
-    (if (and (stringp warning)
-             (not (string-empty-p warning))
-             (not revealed))
+    (if (and guarded (not revealed))
         (appkit-ui-insert-prefixed-lines
          prefix "[RET to reveal]" :face 'shadow :properties properties)
       (appkit-ui-insert-prefixed-lines
        prefix
-       (if (and (stringp text) (not (string-empty-p text)))
-           text
-         "(no text)")
+       (if (and (stringp text) (not (string-empty-p text))) text "(no text)")
        :properties properties))))
 
 (defun misskey-render--insert-body
@@ -197,14 +188,11 @@ PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
   (let*
       ((key (misskey-note-id note))
        (revealed (misskey-render-revealed-p view key))
-       (avatar-p (misskey-media-avatars-enabled-p))
        (properties (misskey-render-note-properties note)))
     (appkit-discussion-entry-create :key key :parent-key parent-key
                                     :depth depth :connector connector
                                     :avatar
-                                    (and avatar-p
-                                         (misskey-media-avatar-image
-                                          view note))
+                                    (misskey-media-avatar-image view note)
                                     :avatar-fallback "@" :context
                                     (and
                                      (misskey-note-pure-renote-p note)

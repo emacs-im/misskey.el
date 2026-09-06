@@ -175,19 +175,14 @@
 (defun misskey-notifications--entry-properties (notification)
   "Return domain text properties for NOTIFICATION."
   (let ((note (alist-get 'note notification))
-        (user (alist-get 'user notification))
-        properties)
-    (when (consp note)
-      (setq properties
-            (append (list misskey-note-property note
-                          misskey-note-id-property (misskey-note-id note))
-                    properties)))
-    (when (consp user)
-      (setq properties
-            (append (list misskey-user-property user
-                          misskey-user-id-property (misskey-user-id user))
-                    properties)))
-    properties))
+        (user (alist-get 'user notification)))
+    (append
+     (when (consp user)
+       (list misskey-user-property user
+             misskey-user-id-property (misskey-user-id user)))
+     (when (consp note)
+       (list misskey-note-property note
+             misskey-note-id-property (misskey-note-id note))))))
 
 (defun misskey-notifications--project (state)
   "Project notification STATE into Appkit directory entries."
@@ -210,58 +205,46 @@
             :label (if all-read-p "Notifications · read"
                      "Notifications · not acknowledged")))))
     (when (memq phase '(initial refresh older error))
-      (setq entries
-            (nconc
-             entries
-             (list
-              (appkit-directory-entry-create
-               :key '(notifications status) :role 'note
-               :section-key section-key :indent 2
-               :face (if (eq phase 'error) 'error 'shadow)
-               :label
-               (pcase phase
-                 ('initial "Loading notifications without marking read...")
-                 ('refresh "Refreshing without marking read...")
-                 ('older "Loading older notifications...")
-                 ('error (format "Unable to load notifications: %s"
-                                 message))))))))
+      (push
+       (appkit-directory-entry-create
+        :key '(notifications status) :role 'note
+        :section-key section-key :indent 2
+        :face (if (eq phase 'error) 'error 'shadow)
+        :label
+        (pcase phase
+          ('initial "Loading notifications without marking read...")
+          ('refresh "Refreshing without marking read...")
+          ('older "Loading older notifications...")
+          ('error (format "Unable to load notifications: %s" message))))
+       entries))
     (dolist (notification items)
       (let* ((id (alist-get 'id notification))
              (item-read-p
               (or (eq (alist-get 'isRead notification) t)
                   (gethash id acknowledged))))
-        (setq entries
-              (nconc
-               entries
-               (list
-                (appkit-directory-entry-create
-                 :key id :role 'item :section-key section-key :item-p t
-                 :unread-p (not item-read-p)
-                 :payload notification
-                 :stamp (list notification item-read-p)
-                 :help-echo "RET: Open notification target"
-                 :properties
-                 (misskey-notifications--entry-properties notification)))))))
+        (push
+         (appkit-directory-entry-create
+          :key id :role 'item :section-key section-key :item-p t
+          :unread-p (not item-read-p)
+          :payload notification :stamp (list notification item-read-p)
+          :help-echo "RET: Open notification target"
+          :properties (misskey-notifications--entry-properties notification))
+         entries)))
     (when (plist-get state :older-exhausted-p)
-      (setq entries
-            (nconc
-             entries
-             (list
-              (appkit-directory-entry-create
-               :key '(notifications exhausted) :role 'note
-               :section-key section-key :indent 2 :face 'shadow
-               :label "No older notifications.")))))
-    (unless items
-      (when (eq phase 'ready)
-        (setq entries
-              (nconc
-               entries
-               (list
-                (appkit-directory-entry-create
-                 :key '(notifications empty) :role 'note
-                 :section-key section-key :indent 2 :face 'shadow
-                 :label "No notifications returned."))))))
-    entries))
+      (push
+       (appkit-directory-entry-create
+        :key '(notifications exhausted) :role 'note
+        :section-key section-key :indent 2 :face 'shadow
+        :label "No older notifications.")
+       entries))
+    (when (and (null items) (eq phase 'ready))
+      (push
+       (appkit-directory-entry-create
+        :key '(notifications empty) :role 'note
+        :section-key section-key :indent 2 :face 'shadow
+        :label "No notifications returned.")
+       entries))
+    (nreverse entries)))
 
 (defun misskey-notifications--handle-read-error (view state failure)
   "Install notification read FAILURE in VIEW STATE."
@@ -380,29 +363,20 @@ OBSERVATION versions canonical entity merges."
                            :account (plist-get state :account) :owner
                            operation)))))
 
-(defun misskey-notifications--handle-mark-success (view state ids)
-  "Acknowledge notification IDS in VIEW STATE."
-  (let ((acknowledged (plist-get state :acknowledged-ids)))
-    (dolist (id ids) (puthash id t acknowledged)))
-  (setf (plist-get state :marking-p) nil)
-  (misskey-dispatch view
-                    (list :render
-                          (appkit-projection-change-create :full-p t
-                                                           :frame-p t
-                                                           :position
-                                                           'preserve)))
-  (message "Marked all Misskey notifications read"))
+(defun misskey-notifications--finish-mark (view state message &optional ids)
+  "Retire VIEW STATE's read mutation and report MESSAGE.
 
-(defun misskey-notifications--handle-mark-error (view state failure)
-  "Retire failed notification mark in VIEW STATE and report FAILURE."
+Acknowledge only the snapshot IDS supplied by a successful mutation."
+  (let ((acknowledged (plist-get state :acknowledged-ids)))
+    (dolist (id ids)
+      (puthash id t acknowledged)))
   (setf (plist-get state :marking-p) nil)
-  (misskey-dispatch view
-                    (list :render
-                          (appkit-projection-change-create :full-p t
-                                                           :frame-p t
-                                                           :position
-                                                           'preserve)))
-  (message "%s" failure))
+  (misskey-dispatch
+   view
+   (list :render
+         (appkit-projection-change-create
+          :full-p t :frame-p t :position 'preserve)))
+  (message "%s" message))
 
 (defun misskey-notifications-mark-all-read ()
   "Explicitly mark all account notifications read." (interactive)
@@ -428,12 +402,12 @@ OBSERVATION versions canonical entity merges."
                              (make-hash-table)
                              (lambda (_payload)
                                (when (misskey-read-finish operation)
-                                 (misskey-notifications--handle-mark-success
-                                  view state ids)))
+                                 (misskey-notifications--finish-mark
+                                  view state "Marked all Misskey notifications read" ids)))
                              :errback
                              (lambda (failure)
                                (when (misskey-read-finish operation)
-                                 (misskey-notifications--handle-mark-error
+                                 (misskey-notifications--finish-mark
                                   view state failure)))
                              :account (plist-get state :account)
                              :owner operation)))

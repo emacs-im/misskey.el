@@ -52,14 +52,6 @@
   "Return the current live Misskey search view, or nil."
   (misskey-feed-current-view 'search))
 
-(defun misskey-search--state (view)
-  "Return VIEW's validated search state."
-  (let ((state (misskey-feed-view-state view 'search)))
-    (unless (and (stringp (plist-get state :query))
-                 (not (string-empty-p (plist-get state :query))))
-      (error "Invalid Misskey search state"))
-    state))
-
 (defun misskey-search--footer (state)
   "Return the generated search footer for STATE."
   (concat "\nQuery: " (plist-get state :query)

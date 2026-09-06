@@ -16,7 +16,6 @@
 (require 'appkit-core)
 (require 'appkit-discussion)
 (require 'appkit-projection)
-(require 'appkit-projection)
 (require 'appkit-presentation)
 (require 'misskey-core)
 (require 'misskey-http)
@@ -118,10 +117,7 @@ replaces the default empty result text."
 
 (defun misskey-feed--generated-text (state key fallback)
   "Return STATE's generated text at KEY, or call FALLBACK."
-  (let ((function (plist-get state key)))
-    (if function
-        (funcall function state)
-      (funcall fallback state))))
+  (funcall (or (plist-get state key) fallback) state))
 
 (defun misskey-feed-setup-view (view)
   "Initialize VIEW's stable note projection."
@@ -136,18 +132,6 @@ replaces the default empty result text."
                                                        :frame-p t
                                                        :position
                                                        'preserve))))))
-
-(defun misskey-feed--new-notes (current candidates)
-  "Return CANDIDATES whose IDs do not occur in CURRENT."
-  (let ((seen (make-hash-table :test #'equal))
-        result)
-    (dolist (note current)
-      (puthash (misskey-note-id note) t seen))
-    (dolist (note candidates (nreverse result))
-      (let ((id (misskey-note-id note)))
-        (unless (gethash id seen)
-          (puthash id t seen)
-          (push note result))))))
 
 (defun misskey-feed--handle-error (view state failure)
   "Install feed FAILURE in VIEW STATE."
@@ -171,13 +155,13 @@ OBSERVATION versions canonical note merges."
            (current (plist-get state :items))
            (new-notes
             (if (eq phase 'older)
-                (misskey-feed--new-notes current notes)
+                (misskey-note-new-notes current notes)
               notes))
            (installed
             (pcase phase
               ('initial notes)
               ('refresh
-               (append notes (misskey-feed--new-notes notes current)))
+               (append notes (misskey-note-new-notes notes current)))
               ('older (append current new-notes))
               (_ (error "Invalid Misskey feed phase: %S" phase)))))
         (dolist (note notes)

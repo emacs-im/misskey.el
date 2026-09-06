@@ -571,67 +571,35 @@ Missing wire keys do not alter state; an explicitly present nil value does."
      (when setup (funcall setup surface)) surface)))
 
 (defun misskey-renderer-create (surface)
-  "Create the native Renderer for SURFACE's host type."
-  (if
-      (memq (appkit-surface-type-mode (appkit-surface-type surface))
-            '(misskey-directory-mode misskey-notifications-mode))
-      (appkit-generated-renderer-create :mount
-                                        (lambda (host _app _model)
-                                          (if
-                                              (eq
-                                               (appkit-surface-type-mode
-                                                (appkit-surface-type
-                                                 host))
-                                               'misskey-directory-mode)
-                                              (appkit-directory-configure
-                                               (appkit-directory-surface)
-                                               :item-inserter
-                                               #'misskey-directory--insert-user
-                                               :activate-function
-                                               #'misskey-directory--activate-user)
-                                            (appkit-directory-configure
-                                             (appkit-directory-surface)
-                                             :item-inserter
-                                             #'misskey-notifications--insert-item
-                                             :activate-function
-                                             #'misskey-notifications--activate-item)))
-                                        :merge
-                                        #'appkit-projection-change-merge
-                                        :render
-                                        (lambda
-                                          (host _app model _change)
-                                          (appkit-directory-reconcile
-                                           (appkit-directory-surface)
-                                           (if
-                                               (eq
-                                                (plist-get model :type)
-                                                'relationship-directory)
-                                               (misskey-directory--project
-                                                host model)
-                                             (misskey-notifications--project
-                                              model)))
-                                          nil)
-                                        :unmount #'ignore)
-    (appkit-projection-renderer-create :project-all
-                                       (lambda (host _app model)
-                                         (if
-                                             (eq
-                                              (plist-get model :type)
-                                              'thread)
-                                             (misskey-thread--project
-                                              model
-                                              (appkit-surface-app host))
-                                           (misskey-render-project-notes
-                                            (plist-get model :items)
-                                            (appkit-surface-app host))))
-                                       :project-frame
-                                       #'misskey-render-frame :printer
-                                       (lambda (_host _app row)
-                                         (misskey-render-insert-row
-                                          row))
-                                       :anchor-property
-                                       appkit-discussion-key-property
-                                       :no-separator-p t)))
+  "Create the Renderer selected by SURFACE's host type."
+  (let* ((mode (appkit-surface-type-mode (appkit-surface-type surface)))
+         (directory-p (eq mode 'misskey-directory-mode)))
+    (if (memq mode '(misskey-directory-mode misskey-notifications-mode))
+        (appkit-generated-renderer-create
+         :mount (lambda (_host _app _model)
+                  (appkit-directory-configure
+                   (appkit-directory-surface)
+                   :item-inserter (if directory-p #'misskey-directory--insert-user
+                                    #'misskey-notifications--insert-item)
+                   :activate-function (if directory-p #'misskey-directory--activate-user
+                                        #'misskey-notifications--activate-item)))
+         :merge #'appkit-projection-change-merge
+         :render (lambda (host _app model _change)
+                   (appkit-directory-reconcile
+                    (appkit-directory-surface)
+                    (if directory-p (misskey-directory--project host model)
+                      (misskey-notifications--project model)))
+                   nil)
+         :unmount #'ignore)
+      (appkit-projection-renderer-create
+       :project-all (lambda (host _app model)
+                      (if (eq (plist-get model :type) 'thread)
+                          (misskey-thread--project model (appkit-surface-app host))
+                        (misskey-render-project-notes
+                         (plist-get model :items) (appkit-surface-app host))))
+       :project-frame #'misskey-render-frame
+       :printer (lambda (_host _app row) (misskey-render-insert-row row))
+       :anchor-property appkit-discussion-key-property :no-separator-p t))))
 
 (defun misskey-render-frame (_surface _app state)
   "Project STATE's host-specific frame and media failure."
@@ -655,32 +623,24 @@ Missing wire keys do not alter state; an explicitly present nil value does."
   "Commit account-owned results and return exact replies."
   (or (and (fboundp 'misskey-media-app-update)
            (misskey-media-app-update context model message))
-      (pcase message
-        (`(:timeline-snapshot ,snapshot)
-         (setf (misskey--session-timeline model) snapshot)
-         (appkit-next :model model :render appkit-render-none))
-        (`(:timeline-observe ,request-id)
-         (let ((observation (cl-incf (misskey--session-revision model))))
-           (appkit-next
-            :model model :render appkit-render-none
-            :commands
-            (list (appkit-command-post-message
-                   :target (appkit-transition-context-reply-route context)
-                   :message (list :timeline-observed request-id observation)
-                   :delivery 'report)))))
-        (`(:timeline-merge ,request-id ,observation ,notes)
-         (let ((app (gethash (misskey--account-key (misskey--session-account model))
-                             misskey--apps)))
-           (dolist (note notes)
-             (misskey-merge-note-state app note observation))
-           (appkit-next
-            :model model :render appkit-render-none
-            :commands
-            (list (appkit-command-post-message
-                   :target (appkit-transition-context-reply-route context)
-                   :message (list :timeline-committed request-id notes)
-                   :delivery 'report)))))
-        (_ (appkit-next :model model :render appkit-render-none)))))
+      (let ((reply
+             (pcase message
+               (`(:timeline-snapshot ,snapshot)
+                (setf (misskey--session-timeline model) snapshot) nil)
+               (`(:timeline-observe ,request-id)
+                (list :timeline-observed request-id
+                      (cl-incf (misskey--session-revision model))))
+               (`(:timeline-merge ,request-id ,observation ,notes)
+                (let ((app (gethash (misskey--account-key (misskey--session-account model))
+                                    misskey--apps)))
+                  (dolist (note notes) (misskey-merge-note-state app note observation)))
+                (list :timeline-committed request-id notes)))))
+        (appkit-next
+         :model model :render appkit-render-none
+         :commands (when reply
+                     (list (appkit-command-post-message
+                            :target (appkit-transition-context-reply-route context)
+                            :message reply :delivery 'report)))))))
 
 (defvar misskey--transition-context nil
   "Current Misskey transition's routing capabilities.")

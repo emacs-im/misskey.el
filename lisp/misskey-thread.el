@@ -15,7 +15,6 @@
 (require 'appkit-core)
 (require 'appkit-discussion)
 (require 'appkit-projection)
-(require 'appkit-projection)
 (require 'appkit-presentation)
 (require 'misskey-actions)
 (require 'misskey-compose)
@@ -217,18 +216,10 @@
 
 FOCUS and ANCESTORS hold the staged initial thread context."
   (when (misskey-read-finish operation)
-    (let*
-        ((loaded-p (plist-get state :loaded-p))
-         (new
-          (if (eq phase 'older)
-              (let ((seen (make-hash-table :test #'equal)) result)
-                (dolist (note (plist-get state :replies))
-                  (puthash (misskey-note-id note) t seen))
-                (dolist (note replies (nreverse result))
-                  (unless (gethash (misskey-note-id note) seen)
-                    (puthash (misskey-note-id note) t seen)
-                    (push note result))))
-            replies)))
+    (let* ((loaded-p (plist-get state :loaded-p))
+           (new (if (eq phase 'older)
+                    (misskey-note-new-notes (plist-get state :replies) replies)
+                  replies)))
       (if (eq phase 'initial)
           (setf (plist-get state :focus) focus
                 (plist-get state :ancestors) ancestors
@@ -236,27 +227,18 @@ FOCUS and ANCESTORS hold the staged initial thread context."
         (setf (plist-get state :replies)
               (append (plist-get state :replies) new)))
       (setf (plist-get state :replies-exhausted-p) (null new)
-            (plist-get state :loading-p) nil (plist-get state :phase)
-            'ready (plist-get state :message) nil
+            (plist-get state :loading-p) nil
+            (plist-get state :phase) 'ready
+            (plist-get state :message) nil
             (plist-get state :loaded-p) t)
-      (misskey-dispatch view
-                        (list :render
-                              (appkit-projection-change-create :full-p
-                                                               t
-                                                               :frame-p
-                                                               t
-                                                               :position
-                                                               (if
-                                                                   (and
-                                                                    (eq
-                                                                     phase
-                                                                     'initial)
-                                                                    (not
-                                                                     loaded-p))
-                                                                   (plist-get
-                                                                    state
-                                                                    :focus-id)
-                                                                 'preserve))))
+      (misskey-dispatch
+       view
+       (list :render
+             (appkit-projection-change-create
+              :full-p t :frame-p t
+              :position (if (and (eq phase 'initial) (not loaded-p))
+                            (plist-get state :focus-id)
+                          'preserve))))
       (misskey-media-prefetch-notes view (misskey-thread--items state)))))
 
 (defun misskey-thread--load-replies

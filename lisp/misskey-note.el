@@ -182,6 +182,18 @@ A pure renote is a wrapper rather than a quote."
       (misskey-note-validate nested)))
   note)
 
+(defun misskey-note-new-notes (current candidates)
+  "Return CANDIDATES whose IDs do not occur in CURRENT."
+  (let ((seen (make-hash-table :test #'equal))
+        result)
+    (dolist (note current)
+      (puthash (misskey-note-id note) t seen))
+    (dolist (note candidates (nreverse result))
+      (let ((id (misskey-note-id note)))
+        (unless (gethash id seen)
+          (puthash id t seen)
+          (push note result))))))
+
 (defun misskey-note-validate-list (payload)
   "Return validated note PAYLOAD with unique stable IDs."
   (unless (listp payload)
@@ -197,12 +209,9 @@ A pure renote is a wrapper rather than a quote."
 
 (defun misskey-note-presentation-dependencies (note)
   "Return shared presentation dependency keys for NOTE."
-  (let* ((display-note (misskey-note-display-note note))
-         (quoted (misskey-note-quoted-note note))
-         (notes (delete-dups (delq nil (list note display-note quoted))))
-         (users (delq nil (list (misskey-note-user note)
-                                (misskey-note-user display-note)
-                                (and quoted (misskey-note-user quoted)))))
+  (let* ((quoted (misskey-note-quoted-note note))
+         (notes (list note (misskey-note-display-note note) quoted))
+         (avatar (misskey-note-avatar-url note))
          (files (append (misskey-note-media-files note)
                         (and quoted (misskey-note-media-files quoted)))))
     (delete-dups
@@ -212,12 +221,12 @@ A pure renote is a wrapper rather than a quote."
                       (when-let* ((id (misskey-note-id dependency-note)))
                         (list :note id)))
                     notes)
-            (list (and (misskey-note-avatar-url note)
-                       (list :avatar (misskey-note-avatar-url note))))
-            (mapcar (lambda (user)
-                      (when-let* ((id (misskey-user-id user)))
+            (list (and avatar (list :avatar avatar)))
+            (mapcar (lambda (dependency-note)
+                      (when-let* ((id (misskey-user-id
+                                       (misskey-note-user dependency-note))))
                         (list :user id)))
-                    users)
+                    notes)
             (mapcar (lambda (file)
                       (list :media (alist-get 'id file)))
                     files))))))

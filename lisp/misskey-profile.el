@@ -73,8 +73,8 @@
 (defun misskey-profile--state (view)
   "Return VIEW's validated profile state."
   (let ((state (misskey-feed-view-state view 'profile)))
-    (unless (and (memq (plist-get state :profile-mode)
-                       (mapcar #'car misskey-profile--mode-specs))
+    (unless (and (assq (plist-get state :profile-mode)
+                       misskey-profile--mode-specs)
                  (listp (plist-get state :profile-reference)))
       (error "Invalid Misskey profile view state"))
     state))
@@ -83,10 +83,6 @@
   "Return the profile mode specification for MODE."
   (or (assq mode misskey-profile--mode-specs)
       (error "Invalid Misskey profile mode: %S" mode)))
-
-(defun misskey-profile--mode-label (mode)
-  "Return the display label for profile MODE."
-  (cadr (misskey-profile--mode-spec mode)))
 
 (defun misskey-profile--next-mode (mode)
   "Return the profile mode following MODE."

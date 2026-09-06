@@ -86,7 +86,7 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
   "Validate queued ACTION and VALUE without constructing a request."
   (unless (memq action
                 '(react unreact favorite unfavorite renote delete-note
-                  follow unfollow cancel-follow))
+                        follow unfollow cancel-follow))
     (error "Unknown Misskey action: %S" action))
   (when (and (eq action 'react)
              (not (and (stringp value) (not (string-empty-p value)))))
@@ -119,32 +119,23 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
   "Apply successful ACTION for NOTE with VALUE under APP."
   (let ((id (misskey-note-id note)))
     (pcase action
-      ('react
+      ((or 'react 'unreact)
        (let* ((old
                (misskey-note-state-value
                 app id :my-reaction (alist-get 'myReaction note)))
               (count
                (misskey-actions--integer
                 (misskey-note-state-value
-                 app id :reaction-count (alist-get 'reactionCount note)))))
+                 app id :reaction-count (alist-get 'reactionCount note))))
+              (reaction (and (eq action 'react) value)))
          (misskey-set-note-state-values
-          app id :my-reaction value
-          :reaction-count (if old count (1+ count)))))
-      ('unreact
-       (let* ((old
-               (misskey-note-state-value
-                app id :my-reaction (alist-get 'myReaction note)))
-              (count
-               (misskey-actions--integer
-                (misskey-note-state-value
-                 app id :reaction-count (alist-get 'reactionCount note)))))
-         (misskey-set-note-state-values
-          app id :my-reaction nil
-          :reaction-count (if old (max 0 (1- count)) count))))
-      ('favorite
-       (misskey-set-note-state-values app id :favorited-p t))
-      ('unfavorite
-       (misskey-set-note-state-values app id :favorited-p nil))
+          app id :my-reaction reaction
+          :reaction-count (cond
+                           ((eq action 'react) (if old count (1+ count)))
+                           (old (max 0 (1- count)))
+                           (t count)))))
+      ((or 'favorite 'unfavorite)
+       (misskey-set-note-state-values app id :favorited-p (eq action 'favorite)))
       ('renote
        (let ((count
               (misskey-actions--integer
@@ -249,19 +240,17 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
 
 (defun misskey-actions--dispatch-lane (lane)
   "Dispatch LANE's latest desired mutation."
-  (let*
-      ((app (misskey-actions--lane-app lane))
-       (table (misskey-request-table app))
-       (key (misskey-actions--lane-key lane))
-       (target (misskey-actions--lane-desired-target lane))
-       (requested (misskey-actions--lane-desired-action lane))
-       (action
-        (misskey-actions--effective-action app requested target))
-       (value (misskey-actions--lane-desired-value lane))
-       (callback (misskey-actions--lane-desired-callback lane))
-       (operation (cons action nil))
-       (spec (misskey-actions--spec action target value))
-       callback-ran-p request)
+  (let* ((app (misskey-actions--lane-app lane))
+         (table (misskey-request-table app))
+         (key (misskey-actions--lane-key lane))
+         (target (misskey-actions--lane-desired-target lane))
+         (requested (misskey-actions--lane-desired-action lane))
+         (action (misskey-actions--effective-action app requested target))
+         (value (misskey-actions--lane-desired-value lane))
+         (callback (misskey-actions--lane-desired-callback lane))
+         (operation (cons action nil))
+         (spec (misskey-actions--spec action target value))
+         callback-ran-p request)
     (setf (misskey-actions--lane-requested-action lane) requested
           (misskey-actions--lane-value lane) value
           (misskey-actions--lane-token lane) operation
@@ -270,90 +259,53 @@ When DISPLAY-NOTE-P is non-nil, unwrap a pure renote."
           (misskey-actions--lane-desired-value lane) nil
           (misskey-actions--lane-desired-callback lane) nil)
     (misskey-actions--fence app action target)
-    (setq request
-          (misskey-http-post (car spec) (cadr spec)
-                             (lambda (payload) (setq callback-ran-p t)
-                               (when
-                                   (and (appkit-app-live-p app)
-                                        (eq lane (gethash key table))
-                                        (eq operation
-                                            (misskey-actions--lane-token
-                                             lane)))
-                                 (let ((applied-p t) desired-callback)
-                                   (condition-case err
-                                       (misskey-actions--apply-success
-                                        app action target value
-                                        payload)
-                                     (error (setq applied-p nil)
-                                            (message
-                                             "Misskey action state update failed: %s"
-                                             (error-message-string err))))
-                                   (if
-                                       (misskey-actions--lane-desired-action
-                                        lane)
-                                       (if
-                                           (misskey-actions--same-intent-p
-                                            lane)
-                                           (progn
-                                             (setq desired-callback
-                                                   (misskey-actions--lane-desired-callback
-                                                    lane))
-                                             (remhash key table))
-                                         (condition-case err
-                                             (misskey-actions--dispatch-lane
-                                              lane)
-                                           (error (remhash key table)
-                                                  (message
-                                                   "Misskey queued action failed: %s"
-                                                   (error-message-string
-                                                    err)))))
-                                     (remhash key table))
-                                   (when applied-p
-                                     (misskey-actions--invoke-callback
-                                      callback payload)
-                                     (misskey-actions--invoke-callback
-                                      desired-callback payload)
-                                     (message "%s"
-                                              (misskey-actions--label
-                                               action))))))
-                             :errback
-                             (lambda (failure) (setq callback-ran-p t)
-                               (when
-                                   (and (appkit-app-live-p app)
-                                        (eq lane (gethash key table))
-                                        (eq operation
-                                            (misskey-actions--lane-token
-                                             lane)))
-                                 (message "%s" failure)
-                                 (if
-                                     (and
-                                      (misskey-actions--lane-desired-action
-                                       lane)
-                                      (not
-                                       (misskey-actions--same-intent-p
-                                        lane)))
-                                     (condition-case err
-                                         (misskey-actions--dispatch-lane
-                                          lane)
-                                       (error (remhash key table)
-                                              (message
-                                               "Misskey queued action failed: %s"
-                                               (error-message-string
-                                                err))))
-                                   (remhash key table))))
-                             :account
-                             (misskey-actions--lane-account lane)
-                             :owner app))
-    (when
-        (and request (not callback-ran-p)
-             (eq lane (gethash key table))
-             (eq operation (misskey-actions--lane-token lane)))
-      (setf (misskey-actions--lane-request lane) request))
-    (when
-        (and (null request) (not callback-ran-p)
-             (eq lane (gethash key table))
-             (eq operation (misskey-actions--lane-token lane)))
-      (remhash key table))
+    (cl-flet
+        ((current-p ()
+           (and (eq lane (gethash key table))
+                (eq operation (misskey-actions--lane-token lane))))
+         (settle ()
+           (if (and (misskey-actions--lane-desired-action lane)
+                    (not (misskey-actions--same-intent-p lane)))
+               (progn
+                 (condition-case err
+                     (misskey-actions--dispatch-lane lane)
+                   (error
+                    (remhash key table)
+                    (message "Misskey queued action failed: %s"
+                             (error-message-string err))))
+                 nil)
+             (prog1 (misskey-actions--lane-desired-callback lane)
+               (remhash key table)))))
+      (setq request
+            (misskey-http-post
+             (car spec) (cadr spec)
+             (lambda (payload)
+               (setq callback-ran-p t)
+               (when (and (appkit-app-live-p app) (current-p))
+                 (let ((applied-p t))
+                   (condition-case err
+                       (misskey-actions--apply-success app action target value payload)
+                     (error
+                      (setq applied-p nil)
+                      (message "Misskey action state update failed: %s"
+                               (error-message-string err))))
+                   (let ((desired-callback (settle)))
+                     (when applied-p
+                       (misskey-actions--invoke-callback callback payload)
+                       (misskey-actions--invoke-callback desired-callback payload)
+                       (message "%s" (misskey-actions--label action)))))))
+             :errback
+             (lambda (failure)
+               (setq callback-ran-p t)
+               (when (and (appkit-app-live-p app) (current-p))
+                 (message "%s" failure)
+                 (settle)))
+             :account (misskey-actions--lane-account lane)
+             :owner app))
+      (when (and (not callback-ran-p) (current-p))
+        (if request
+            (setf (misskey-actions--lane-request lane) request)
+          (remhash key table))))
     request))
 
 (cl-defun misskey-actions-perform
