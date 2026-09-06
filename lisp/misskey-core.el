@@ -57,26 +57,21 @@ label is not account identity and need not equal the Misskey username."
   token
   user-id)
 
-(cl-defstruct
-    (misskey--session (:constructor misskey--session-create))
-  "State owned by one Misskey application session." account
-  timeline-states revision note-overrides note-revisions
+(cl-defstruct (misskey--session (:constructor misskey--session-create))
+  "Account domain state owned by one Misskey App."
+  account timeline revision note-overrides note-revisions
   user-overrides user-revisions requests resources address)
 
 (defun misskey--make-session (account)
   "Return initialized application state for ACCOUNT."
-  (misskey--session-create :account account :timeline-states
-                           (make-hash-table :test #'eq) :revision 0
-                           :note-overrides
-                           (make-hash-table :test #'equal)
-                           :note-revisions
-                           (make-hash-table :test #'equal)
-                           :user-overrides
-                           (make-hash-table :test #'equal)
-                           :user-revisions
-                           (make-hash-table :test #'equal) :requests
-                           (make-hash-table :test #'equal) :resources
-                           (make-hash-table :test #'equal)))
+  (misskey--session-create
+   :account account :revision 0
+   :note-overrides (make-hash-table :test #'equal)
+   :note-revisions (make-hash-table :test #'equal)
+   :user-overrides (make-hash-table :test #'equal)
+   :user-revisions (make-hash-table :test #'equal)
+   :requests (make-hash-table :test #'equal)
+   :resources (make-hash-table :test #'equal)))
 
 (defvar misskey--apps (make-hash-table :test #'equal)
   "Live Appkit sessions keyed by Misskey account.")
@@ -290,20 +285,15 @@ records."
   (unless (zerop (% (length properties) 2))
     (error "Misskey state updates must be property-value pairs")))
 
+(defvar misskey--collect-invalidations nil
+  "Whether account invalidations are deferred until this transition commits.")
+
+(defvar misskey--invalidations nil
+  "Account/resource sets accumulated by the current App transition.")
+
 (defun misskey-invalidate-resource (app resource)
-  "Request targeted resource redraws in APP's live hosts."
-  (maphash
-   (lambda (_identity entry)
-     (let ((surface (cdr entry)))
-       (when (appkit-surface-live-p surface)
-         (misskey-dispatch surface
-                           (list :render
-                                 (appkit-projection-change-create
-                                  :resources (list resource) :position
-                                  'preserve :full-p
-                                  (eq (car-safe resource) :note)
-                                  :frame-p t))))))
-   (appkit-app-surfaces app)))
+  "Request a redraw for APP's RESOURCE after the current commit."
+  (misskey-invalidate-resources app (list resource)))
 
 (defun misskey--record-state-values
     (app table revisions id resource properties)
@@ -661,16 +651,36 @@ Missing wire keys do not alter state; an explicitly present nil value does."
          (failure (plist-get state :media-error)))
     (if failure (cons (concat (car frame) "\nMedia: " failure "\n") (cdr frame)) frame)))
 
-(defun misskey-app--update (_context model message)
-  "Commit account-owned preview acquisition results."
-  (pcase message
-    (`(:preview-effect ,effect)
-     (appkit-next :model model :render appkit-render-none :commands
-                  (list (appkit-command-start-effect effect))))
-    (`(:preview-settled ,app ,key ,entry ,file)
-     (misskey-media--finish-resource app key entry file)
-     (appkit-next :model model :render appkit-render-none))
-    (_ (appkit-next :model model :render appkit-render-none))))
+(defun misskey-app--update (context model message)
+  "Commit account-owned results and return exact replies."
+  (or (and (fboundp 'misskey-media-app-update)
+           (misskey-media-app-update context model message))
+      (pcase message
+        (`(:timeline-snapshot ,snapshot)
+         (setf (misskey--session-timeline model) snapshot)
+         (appkit-next :model model :render appkit-render-none))
+        (`(:timeline-observe ,request-id)
+         (let ((observation (cl-incf (misskey--session-revision model))))
+           (appkit-next
+            :model model :render appkit-render-none
+            :commands
+            (list (appkit-command-post-message
+                   :target (appkit-transition-context-reply-route context)
+                   :message (list :timeline-observed request-id observation)
+                   :delivery 'report)))))
+        (`(:timeline-merge ,request-id ,observation ,notes)
+         (let ((app (gethash (misskey--account-key (misskey--session-account model))
+                             misskey--apps)))
+           (dolist (note notes)
+             (misskey-merge-note-state app note observation))
+           (appkit-next
+            :model model :render appkit-render-none
+            :commands
+            (list (appkit-command-post-message
+                   :target (appkit-transition-context-reply-route context)
+                   :message (list :timeline-committed request-id notes)
+                   :delivery 'report)))))
+        (_ (appkit-next :model model :render appkit-render-none)))))
 
 (defvar misskey--transition-context nil
   "Current Misskey transition's routing capabilities.")
@@ -693,17 +703,55 @@ Missing wire keys do not alter state; an explicitly present nil value does."
   "Serialize domain handlers and their closed follow-on commands."
   (let* ((misskey--transition-context context)
          (misskey--transition-commands nil)
-         (next (misskey-surface--update context model message)))
-    (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
-                 :commands (append (appkit-next-commands next) (nreverse misskey--transition-commands)))))
+         (timeline-p (eq (plist-get model :type) 'timeline))
+         (next (or (and timeline-p (misskey-timeline-update context model message))
+                   (misskey-surface--update context model message))))
+    (if (appkit-next-rejected-p next) next
+      (appkit-next
+       :model (appkit-next-model next) :render (appkit-next-render next)
+       :commands
+       (append (appkit-next-commands next)
+               (when (and timeline-p
+                          (memq (car-safe message) '(:timeline-committed :timeline-select :timeline-reveal)))
+                 (list (appkit-command-post-message
+                        :target (appkit-transition-context-parent-address context)
+                        :message (list :timeline-snapshot (misskey-timeline--snapshot (appkit-next-model next)))
+                        :delivery 'report)))
+               (nreverse misskey--transition-commands))))))
 
 (defun misskey-app-update (context model message)
-  "Serialize account results and their closed host updates."
+  "Serialize account results and batch their dependent host updates."
   (let* ((misskey--transition-context context)
          (misskey--transition-commands nil)
+         (misskey--collect-invalidations t)
+         (misskey--invalidations nil)
          (next (misskey-app--update context model message)))
-    (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
-                 :commands (append (appkit-next-commands next) (nreverse misskey--transition-commands)))))
+    (if (appkit-next-rejected-p next) next
+      (let ((misskey--collect-invalidations nil))
+        (dolist (entry misskey--invalidations)
+          (misskey-invalidate-resources (car entry) (cdr entry))))
+      (appkit-next :model (appkit-next-model next) :render (appkit-next-render next)
+                   :commands (append (appkit-next-commands next)
+                                     (nreverse misskey--transition-commands))))))
+
+(defun misskey-invalidate-resources (app resources)
+  "Request one redraw per live APP host for RESOURCES."
+  (if misskey--collect-invalidations
+      (setf (alist-get app misskey--invalidations nil nil #'eq)
+            (cl-union resources (alist-get app misskey--invalidations nil nil #'eq)
+                      :test #'equal))
+    (maphash
+     (lambda (_identity entry)
+       (let ((surface (cdr entry)))
+         (when (appkit-surface-live-p surface)
+           (misskey-dispatch
+            surface
+            (list :render
+                  (appkit-projection-change-create
+                   :resources resources :position 'preserve :frame-p t
+                   :full-p (cl-some (lambda (resource) (eq (car-safe resource) :note))
+                                    resources)))))))
+     (appkit-app-surfaces app))))
 
 (provide 'misskey-core)
 

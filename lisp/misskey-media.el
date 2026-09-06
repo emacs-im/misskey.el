@@ -11,6 +11,7 @@
 
 ;;; Code:
 (require 'appkit-media-effect)
+(require 'appkit-task-queue)
 
 (require 'cl-lib)
 (require 'subr-x)
@@ -58,10 +59,10 @@ files stay hidden until their note is explicitly revealed."
   (and misskey-timeline-show-media
        (appkit-media-inline-image-rendering-available-p)))
 
-(defun misskey-media--cache-base (source kind surface)
+(defun misskey-media--cache-base (source kind account)
   "Return SOURCE's account-isolated extensionless cache path for KIND."
   (expand-file-name (secure-hash 'sha256 source)
-                    (misskey-media--account-directory surface kind)))
+                    (misskey-media--cache-directory account kind)))
 
 (defun misskey-media--entry (view resource-key)
   "Return VIEW's Appkit resource entry for RESOURCE-KEY, or nil."
@@ -73,105 +74,27 @@ files stay hidden until their note is explicitly revealed."
   "Return non-nil when FILE is a usable Appkit image cache entry."
   (appkit-media-file-present-p file))
 
-(defun misskey-media--finish-resource (app resource-key entry file)
-  "Finish APP RESOURCE-KEY ENTRY with cached FILE or failure."
-  (when (appkit-app-live-p app)
-    (when
-        (eq entry (gethash resource-key (misskey-resource-store app)))
-      (unless (misskey-media--valid-cache-file-p file)
-        (setq file nil))
-      (setf (plist-get entry :status) (if file 'ready 'failed)
-            (plist-get entry :file) file
-            (plist-get entry :avatar-image) nil
-            (plist-get entry :preview-image) nil)
-      (misskey-invalidate-resource app resource-key))))
-
 (cl-defun misskey-media-request-resource
     (surface resource-key source kind &key name mime-type)
-  "Acquire SOURCE as an account-scoped preview Effect for SURFACE."
-  (when
-      (and (appkit-surface-live-p surface) resource-key
-           (misskey-note--https-url-p source))
-    (let*
-        ((app (appkit-surface-app surface))
-         (store (misskey-resource-store app))
-         (current (gethash resource-key store)))
-      (if
-          (and (equal (plist-get current :source) source)
-               (or (eq (plist-get current :status) 'pending)
-                   (and (eq (plist-get current :status) 'ready)
-                        (misskey-media--valid-cache-file-p
-                         (plist-get current :file)))))
-          current
-        (let*
-            ((base (misskey-media--cache-base source kind surface))
-             (cached (appkit-media-image-cache-existing-file base))
-             (entry
-              (list :source source :status (if cached 'ready 'pending)
-                    :file cached))
-             (effect
-              (appkit-effect-create :key (list 'preview resource-key)
-                                    :input
-                                    (appkit-media-image-acquisition-create
-                                     (appkit-media-resource-create
-                                      :url source :name name
-                                      :mime-type mime-type)
-                                     base)
-                                    :start
-                                    #'appkit-media-image-acquisition-start
-                                    :success
-                                    (lambda (_input file)
-                                      (list :preview-settled app
-                                            resource-key entry file))
-                                    :failure
-                                    (lambda (_input _failure)
-                                      (list :preview-settled app
-                                            resource-key entry nil)))))
-          (puthash resource-key entry store)
-          (misskey-invalidate-resource app resource-key)
-          (unless cached
-            (misskey-dispatch app (list :preview-effect effect)))
-          entry)))))
-
-(defun misskey-media-request-avatar (view note)
-  "Request NOTE's displayed author avatar for VIEW."
-  (when (misskey-media-avatars-enabled-p)
-    (when-let* ((url (misskey-note-avatar-url note)))
-      (misskey-media-request-resource
-       view (list :avatar url) url "avatars"))))
-
-(defun misskey-media-request-file (view file)
-  "Request FILE's preview for VIEW."
-  (when (misskey-media-previews-enabled-p)
-    (when-let* ((url (misskey-file-preview-url file)))
-      (misskey-media-request-resource
-       view (list :media (alist-get 'id file)) url "media"
-       :name (alist-get 'name file)
-       :mime-type (alist-get 'type file)))))
+  "Post an account-scoped preview demand for SURFACE."
+  (when (and (appkit-surface-live-p surface) resource-key
+             (misskey-note--https-url-p source))
+    (misskey-dispatch
+     (appkit-surface-app surface)
+     (list :preview-requested
+           (list (list resource-key source kind
+                       (misskey-media--cache-base
+                        source kind (plist-get (appkit-surface-model surface) :account))
+                       name mime-type))))
+    (misskey-media--entry surface resource-key)))
 
 (defun misskey-media-prefetch-notes (view notes)
-  "Request unguarded avatars and media used by NOTES for VIEW."
+  "Post one demand batch for unguarded previews used by NOTES in VIEW."
   (when (appkit-surface-live-p view)
-    (let
-        ((revealed-content
-          (plist-get (appkit-surface-model view) :revealed-content)))
-      (unless (hash-table-p revealed-content)
-        (error "Misskey note view has no content-warning state"))
-      (dolist (note notes)
-        (let*
-            ((quoted (misskey-note-quoted-note note))
-             (revealed
-              (gethash (misskey-note-id note) revealed-content)))
-          (misskey-media-request-avatar view note)
-          (when quoted (misskey-media-request-avatar view quoted))
-          (dolist
-              (file
-               (append (misskey-note-media-files note)
-                       (and quoted (misskey-note-media-files quoted))))
-            (unless
-                (and (eq (alist-get 'isSensitive file) t)
-                     (not revealed))
-              (misskey-media-request-file view file))))))))
+    (when-let* ((demands (misskey-media--preview-demands
+                          (appkit-surface-model view) notes)))
+      (misskey-dispatch (appkit-surface-app view)
+                        (list :preview-requested demands)))))
 
 (defun misskey-media-avatar-image (view note)
   "Return VIEW's cached avatar image for NOTE, or nil."
@@ -310,10 +233,8 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
 
 (defun misskey-media--account-directory (surface kind)
   "Return the account-isolated KIND cache for SURFACE."
-  (expand-file-name
-   (format "%s/%s/" (secure-hash 'sha256 (prin1-to-string
-                                          (misskey--account-key (plist-get (appkit-surface-model surface) :account)))) kind)
-   (locate-user-emacs-file "misskey/")))
+  (misskey-media--cache-directory
+   (plist-get (appkit-surface-model surface) :account) kind))
 
 (defun misskey-media-update (model message)
   "Commit media acquisition and schedule presentation for MODEL MESSAGE."
@@ -443,6 +364,161 @@ When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
                     model)
                   :render appkit-render-none))
     (_ (appkit-next :model model :render appkit-render-none))))
+
+(defconst misskey-media--preview-concurrency 6
+  "Preview Effect slots reserved per App, independent of transport queuing.")
+
+(defvar misskey-media--preview-commands nil
+  "Effect commands accumulated while advancing the preview task queue.")
+
+(defun misskey-media--preview-demands (model notes)
+  "Return data-only preview demands for NOTES under Surface MODEL."
+  (let ((revealed-content (plist-get model :revealed-content))
+        (account (plist-get model :account))
+        (avatars (misskey-media-avatars-enabled-p))
+        (media (misskey-media-previews-enabled-p))
+        (seen (make-hash-table :test #'equal)) demands)
+    (unless (hash-table-p revealed-content)
+      (error "Misskey note view has no content-warning state"))
+    (cl-labels
+        ((demand (key source kind &optional name mime)
+           (when (and source (misskey-note--https-url-p source)
+                      (not (gethash key seen)))
+             (puthash key t seen)
+             (push (list key source kind
+                         (misskey-media--cache-base source kind account)
+                         name mime)
+                   demands))))
+      (dolist (note notes)
+        (let ((quoted (misskey-note-quoted-note note))
+              (revealed (gethash (misskey-note-id note) revealed-content)))
+          (dolist (item (delq nil (list note quoted)))
+            (when avatars
+              (when-let* ((url (misskey-note-avatar-url item)))
+                (demand (list :avatar url) url "avatars")))
+            (when media
+              (dolist (file (misskey-note-media-files item))
+                (unless (and (eq (alist-get 'isSensitive file) t)
+                             (not revealed))
+                  (demand (list :media (alist-get 'id file))
+                          (misskey-file-preview-url file) "media"
+                          (alist-get 'name file) (alist-get 'type file)))))))))
+    (nreverse demands)))
+
+(defun misskey-media-prefetch-command (context model &optional notes)
+  "Return one App demand command for Surface MODEL and optional NOTES."
+  (when-let* ((demands (misskey-media--preview-demands
+                        model (or notes (plist-get model :items)))))
+    (appkit-command-post-message
+     :target (appkit-transition-context-parent-address context)
+     :message (list :preview-requested demands) :delivery 'report)))
+
+(defun misskey-media--queue-preview (queue key entry input)
+  "Reserve a logical preview slot in QUEUE for KEY, ENTRY and INPUT.
+Only the App update submits or completes tasks.  Queue starters emit commands;
+they never start transport.  The App Effect runtime owns physical cancellation."
+  (appkit-task-queue-submit
+   queue key
+   (lambda (complete)
+     (setf (plist-get entry :complete) complete)
+     (let ((token (plist-get entry :token)))
+       (push
+        (appkit-command-start-effect
+         (appkit-effect-create
+          :key (list 'preview key) :input input
+          :start #'appkit-media-image-acquisition-start
+          :success (lambda (_input file)
+                     (list :preview-settled key token file))
+          :failure (lambda (_input _failure)
+                     (list :preview-settled key token nil))))
+        misskey-media--preview-commands))
+     nil)))
+
+(defun misskey-media-app-update (_context model message)
+  "Commit preview domain MESSAGE against account MODEL, or return nil.
+The existing Appkit task queue bounds reserved Effects, including transports
+waiting in the shared download scheduler.  Completion callbacks only enter
+the Effect gate; queue advancement and resource state belong to this update."
+  (when (memq (car-safe message)
+              '(:preview-requested :preview-settled :preview-cancel))
+    (let* ((store (misskey--session-resources model))
+           (app (gethash (misskey--account-key (misskey--session-account model))
+                         misskey--apps))
+           (queue (gethash 'misskey-media--preview-queue store))
+           (misskey-media--preview-commands nil)
+           changed)
+      (pcase message
+        (`(:preview-requested ,demands)
+         (let (requests cancellations)
+           ;; Revoke an entire replacement batch before the queue pumps;
+           ;; otherwise cancelling one key could start another superseded key.
+           (dolist (demand demands)
+             (pcase-let* ((`(,key ,source ,_kind ,base ,name ,mime) demand)
+                          (current (gethash key store)))
+               (unless (and (equal source (plist-get current :source))
+                            (or (eq (plist-get current :status) 'pending)
+                                (and (eq (plist-get current :status) 'ready)
+                                     (misskey-media--valid-cache-file-p
+                                      (plist-get current :file)))))
+                 (when (and queue (appkit-task-queue-pending-p queue key))
+                   (push key cancellations)
+                   (when (plist-get current :complete)
+                     (push (appkit-command-cancel-effect (list 'preview key))
+                           misskey-media--preview-commands)))
+                 (let* ((cached (appkit-media-image-cache-existing-file base))
+                        (entry (list :source source :status (if cached 'ready 'pending)
+                                     :file cached :token (make-symbol "preview")
+                                     :complete nil :avatar-image nil :preview-image nil)))
+                   (puthash key entry store)
+                   (push key changed)
+                   (unless cached
+                     (push (list key entry
+                                 (appkit-media-image-acquisition-create
+                                  (appkit-media-resource-create
+                                   :url source :name name :mime-type mime)
+                                  base))
+                           requests))))))
+           (when cancellations
+             (appkit-task-queue-cancel-keys queue cancellations))
+           (when requests
+             (unless queue
+               (setq queue (appkit-task-queue-create
+                            app misskey-media--preview-concurrency))
+               (puthash 'misskey-media--preview-queue queue store))
+             (dolist (request (nreverse requests))
+               (apply #'misskey-media--queue-preview queue request)))))
+        (`(:preview-settled ,key ,token ,file)
+         (let ((entry (gethash key store)))
+           (when (and (eq token (plist-get entry :token))
+                      (eq (plist-get entry :status) 'pending))
+             (unless (misskey-media--valid-cache-file-p file) (setq file nil))
+             (setf (plist-get entry :status) (if file 'ready 'failed)
+                   (plist-get entry :file) file)
+             (when-let* ((complete (plist-get entry :complete)))
+               (setf (plist-get entry :complete) nil)
+               (funcall complete))
+             (push key changed))))
+        (`(:preview-cancel ,key)
+         (let ((entry (gethash key store)))
+           (when (eq (plist-get entry :status) 'pending)
+             (setf (plist-get entry :status) 'failed
+                   (plist-get entry :complete) nil
+                   (plist-get entry :token) nil)
+             (push (appkit-command-cancel-effect (list 'preview key))
+                   misskey-media--preview-commands)
+             (when queue (appkit-task-queue-cancel-key queue key))
+             (push key changed)))))
+      (misskey-invalidate-resources app (nreverse changed))
+      (appkit-next :model model :render appkit-render-none
+                   :commands (nreverse misskey-media--preview-commands)))))
+
+(defun misskey-media--cache-directory (account kind)
+  "Return the account-isolated KIND cache directory for ACCOUNT."
+  (expand-file-name
+   (format "%s/%s/"
+           (secure-hash 'sha256 (prin1-to-string (misskey--account-key account)))
+           kind)
+   (locate-user-emacs-file "misskey/")))
 
 (provide 'misskey-media)
 

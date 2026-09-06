@@ -32,7 +32,7 @@
   "Return VIEW's content-warning reveal table."
   (let
       ((table
-        (and (appkit-surface-live-p view)
+        (and (and (appkit-surface-p view) (appkit-surface-alive-p view))
              (plist-get (appkit-surface-model view) :revealed-content))))
     (unless (hash-table-p table)
       (error "Misskey note view has no content-warning state"))
@@ -192,7 +192,7 @@ User properties belong only to the visible span naming that user."
   "Return an Appkit discussion entry rendering NOTE in VIEW.
 
 PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
-  (unless (appkit-surface-live-p view)
+  (unless (and (appkit-surface-p view) (appkit-surface-alive-p view))
     (error "Cannot render a Misskey note into a dead view"))
   (let*
       ((key (misskey-note-id note))
@@ -235,7 +235,7 @@ PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
   (let
       ((view (appkit-current-surface))
        (context (appkit-projection-row-context row)))
-    (unless (appkit-surface-live-p view)
+    (unless (and (appkit-surface-p view) (appkit-surface-alive-p view))
       (error "No live Appkit view while rendering a Misskey note"))
     (appkit-discussion-insert-entry
      (misskey-render-note-entry view
@@ -274,28 +274,21 @@ targets, and pure wrappers whose target payload is absent."
 (defun misskey-render-toggle-content-warning ()
   "Toggle guarded content for the Misskey note at point."
   (interactive)
-  (let*
-      ((view (appkit-current-surface))
-       (note
-        (and (appkit-surface-live-p view)
-             (misskey-render-note-at-point)))
-       (key (and note (misskey-note-id note))))
-    (unless
-        (and key
-             (or (misskey-note-content-warning-p note)
-                 (misskey-note-sensitive-media-p note)))
+  (let* ((view (appkit-current-surface))
+         (note (and (appkit-surface-live-p view) (misskey-render-note-at-point)))
+         (key (and note (misskey-note-id note))))
+    (unless (and key (or (misskey-note-content-warning-p note)
+                         (misskey-note-sensitive-media-p note)))
       (user-error "Current note has no guarded content"))
-    (let ((revealed (misskey-render--revealed-content view)))
-      (if (gethash key revealed) (remhash key revealed)
-        (puthash key t revealed)
-        (misskey-media-prefetch-notes view (list note)))
-      (misskey-dispatch view
-                        (list :render
-                              (appkit-projection-change-create :keys
-                                                               (list
-                                                                key)
-                                                               :position
-                                                               key))))))
+    (if (eq (plist-get (appkit-surface-model view) :type) 'timeline)
+        (misskey-dispatch view (list :timeline-reveal key))
+      (let ((revealed (misskey-render--revealed-content view)))
+        (if (gethash key revealed) (remhash key revealed)
+          (puthash key t revealed)
+          (misskey-media-prefetch-notes view (list note)))
+        (misskey-dispatch view
+                          (list :render (appkit-projection-change-create
+                                         :keys (list key) :position key)))))))
 
 (provide 'misskey-render)
 

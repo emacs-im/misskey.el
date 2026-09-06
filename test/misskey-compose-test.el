@@ -102,13 +102,17 @@
                 ((symbol-function 'misskey-http-cancel) #'ignore))
         (misskey-compose-send)
         (should (appkit-compose-operation-active-p))
-        (should (string-match-p "State: Publishing"
-                                (appkit-chat-compose-display-string)))
-        (should (string-match-p "wait for the server response"
-                                (appkit-chat-compose-display-string)))
         (should (equal (appkit-chat-compose-body) "pending"))
         (goto-char (appkit-chat-compose-body-start-position))
         (should-error (delete-char 1))
+        (let ((generation (appkit-compose-generation))
+              (visibility misskey-compose-visibility))
+          (should-error
+           (misskey-compose-set-visibility
+            (if (eq visibility 'followers) 'public 'followers))
+           :type 'user-error)
+          (should (eq misskey-compose-visibility visibility))
+          (should (= generation (appkit-compose-generation))))
         (appkit-compose-cancel-operation)))))
 
 (ert-deftest misskey-compose-send-restores-state-after-synchronous-error ()
@@ -238,7 +242,7 @@
           (should
            (equal captured
                   '(:text "reply" :visibility "followers"
-                    :replyId "parent"))))))))
+                          :replyId "parent"))))))))
 
 (ert-deftest misskey-compose-send-preserves-quote-target ()
   (misskey-test-with-session
@@ -257,7 +261,7 @@
           (misskey-compose-send)
           (should (equal captured
                          '(:text "comment" :visibility "public"
-                           :renoteId "quoted"))))))))
+                                 :renoteId "quoted"))))))))
 
 (ert-deftest misskey-compose-uploads-once-and-reuses-drive-file-after-failure ()
   (misskey-test-with-session
@@ -453,6 +457,79 @@
           (funcall callback '((createdNote (id . "late"))))
           (should (= posts 1))
           (should-not (buffer-live-p buffer)))))))
+
+(ert-deftest misskey-compose-stopped-owner-releases-draft-and-rejects-results ()
+  (dolist (stop '(app surface))
+    (misskey-test-with-session
+      (misskey-compose-test--with-buffer
+        (let ((buffer (current-buffer))
+              (surface (appkit-current-surface))
+              callback errback
+              (posts 0)
+              (cancels 0))
+          (goto-char (appkit-chat-compose-body-start-position))
+          (insert "first")
+          (misskey-compose-add-note)
+          (insert "second")
+          (cl-letf (((symbol-function 'message) #'ignore)
+                    ((symbol-function 'misskey-http-post)
+                     (lambda (_endpoint _parameters success &rest options)
+                       (setq posts (1+ posts)
+                             callback success
+                             errback (plist-get options :errback))
+                       'request))
+                    ((symbol-function 'misskey-http-cancel)
+                     (lambda (_request)
+                       (setq cancels (1+ cancels))
+                       ;; Cancellation may race with an already queued result.
+                       (funcall callback '((createdNote (id . "racing")))))))
+            (misskey-compose-send)
+            (if (eq stop 'app)
+                (misskey-stop)
+              (appkit-surface-stop surface))
+            (should (buffer-live-p buffer))
+            (should-not (appkit-surface-live-p surface))
+            (should-not (appkit-current-surface))
+            (should-not (appkit-compose-operation-active-p))
+            (should (= cancels 1))
+            (should (equal (mapcar (lambda (item) (plist-get item :text))
+                                   (appkit-chat-compose-items))
+                           '("first" "second")))
+            (goto-char (appkit-chat-compose-body-end-position))
+            (insert " edited")
+            (let ((generation (appkit-compose-generation))
+                  (draft (appkit-chat-compose-items)))
+              (funcall callback '((createdNote (id . "late"))))
+              (funcall errback "late failure")
+              (should (buffer-live-p buffer))
+              (should (equal draft (appkit-chat-compose-items)))
+              (should (= generation (appkit-compose-generation))))
+            (should (equal (appkit-chat-compose-body) "second edited"))
+            (should (= posts 1))
+            (should-not (appkit-current-surface))
+            (appkit-surface-stop surface)
+            (should (= cancels 1))))))))
+
+(ert-deftest misskey-compose-visibility-tracks-only-audience-changes ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (let ((generation (appkit-compose-generation))
+            (visibility (if (eq misskey-compose-visibility 'followers)
+                            'public
+                          'followers)))
+        (should (eq (misskey-compose-set-visibility visibility) visibility))
+        (should (eq misskey-compose-visibility visibility))
+        (should (= (appkit-compose-generation) (1+ generation)))
+        (should (buffer-modified-p))
+        (set-buffer-modified-p nil)
+        (misskey-compose-set-visibility visibility)
+        (should (= (appkit-compose-generation) (1+ generation)))
+        (should-not (buffer-modified-p))
+        (should-error (misskey-compose-set-visibility 'unsupported)
+                      :type 'user-error)
+        (should (eq misskey-compose-visibility visibility))
+        (should (= (appkit-compose-generation) (1+ generation)))
+        (should-not (buffer-modified-p))))))
 
 (ert-deftest misskey-compose-missing-upload-id-is-unknown-and-editable ()
   (misskey-test-with-session

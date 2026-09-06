@@ -347,20 +347,25 @@ Interactively, select one of the current part's attachments."
   request)
 
 (defun misskey-compose--abort-submission (buffer token)
-  "Cancel BUFFER's active request and invalidate publish TOKEN."
-  (when (misskey-compose--submission-current-p buffer token)
-    (let (request)
-      (with-current-buffer buffer
-        (setq request misskey-compose--request)
-        (setq-local misskey-compose--submission-token nil
-                    misskey-compose--request nil))
-      (when request
-        (misskey-http-cancel request))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (appkit-compose-operation-finish (appkit-compose-operation-owner))
-          (misskey-compose--unlock-bodies)
-          (misskey-compose--refresh))))))
+  "Cancel BUFFER's request and reclaim local state owned by TOKEN.
+
+Unlike result callbacks, teardown remains valid after the Surface is revoked."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and token (eq misskey-compose--submission-token token))
+        (let ((request misskey-compose--request))
+          (setq-local misskey-compose--submission-token nil
+                      misskey-compose--request nil)
+          (unwind-protect
+              (progn
+                (misskey-compose--unlock-bodies)
+                (appkit-compose-operation-finish
+                 (appkit-compose-operation-owner))
+                (when (and (appkit-surface-live-p (car token))
+                           (eq (appkit-current-surface) (car token)))
+                  (misskey-compose--refresh)))
+            (when request
+              (misskey-http-cancel request))))))))
 
 (defun misskey-compose--kill-buffer-cleanup ()
   "Invalidate and cancel this draft's active publish chain."
@@ -616,9 +621,10 @@ Interactively, choose `public', `home', or `followers'."
          (choice (or visibility (car (rassoc label choices)))))
     (unless (assq choice choices)
       (user-error "Unsupported Misskey visibility: %S" choice))
-    (setq-local misskey-compose-visibility choice)
-    (misskey-compose--refresh)
-    (set-buffer-modified-p t)
+    (unless (eq misskey-compose-visibility choice)
+      (setq-local misskey-compose-visibility choice)
+      (appkit-compose-touch)
+      (misskey-compose--refresh))
     choice))
 
 (defun misskey-compose-add-note ()

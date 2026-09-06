@@ -107,7 +107,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                                                            (misskey-timeline-test--note
                                                             "n2"
                                                             "renoted body")))))))
-              (setq view (call-interactively #'misskey-home) buffer
+              (setq view (prog1 (call-interactively #'misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view)
               (let ((state (misskey-timeline--view-state view)))
@@ -195,7 +195,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                                                            "Alice Extremely Long Display Name"
                                                            :username
                                                            "alice-identity-tail"))))))
-              (setq view (misskey-home) buffer
+              (setq view (prog1 (misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view)
               (with-current-buffer buffer
@@ -239,7 +239,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                   (lambda
                     (_endpoint _parameters callback &rest _options)
                     (push callback callbacks))))
-              (setq view (misskey-home) buffer
+              (setq view (prog1 (misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (should
                (eq
@@ -253,7 +253,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (goto-char (point-min)) (appkit-discussion-next-entry)
                 (appkit-discussion-next-entry)
                 (should (equal (appkit-discussion-key-at-point) "n2"))
-                (misskey-timeline-refresh)
+                (prog1 (misskey-timeline-refresh) (misskey-test-drain))
                 (should
                  (eq
                   (plist-get (misskey-timeline--view-state view) :phase)
@@ -272,7 +272,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (should
                  (equal (misskey-test-visible-note-keys view)
                         '("n0" "n2" "n1")))
-                (misskey-timeline-refresh)
+                (prog1 (misskey-timeline-refresh) (misskey-test-drain))
                 (funcall (car callbacks) '(((id . "broken") (user))))
                 (misskey-test-drain view)
                 (should
@@ -291,117 +291,68 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (let
                     ((misskey-timeline-limit 0)
                      (request-count (length callbacks)))
-                  (should-error (misskey-timeline-refresh) :type
+                  (should-error (prog1 (misskey-timeline-refresh) (misskey-test-drain)) :type
                                 'user-error)
                   (should (= (length callbacks) request-count))))))
         (misskey-timeline-test--cleanup view buffer)))))
 
-(ert-deftest
-    misskey-timeline-switches-canonical-states-and-revokes-request ()
+(ert-deftest misskey-timeline-switch-retains-pages-and-revokes-old-work ()
   (misskey-test-with-session
-    (let
-        ((misskey-instance-url "https://example.social")
-         (misskey-auth-source-user "alice")
-         (misskey--apps (make-hash-table :test #'equal)) requests
-         canceled view buffer)
+    (let (requests cancelled view buffer)
       (unwind-protect
           (save-window-excursion
-            (cl-letf
-                (((symbol-function 'message) #'ignore)
-                 ((symbol-function 'misskey--authenticated-account)
-                  #'misskey-timeline-test--authenticated-account)
-                 ((symbol-function 'misskey-http--start-request)
-                  (lambda (endpoint _parameters callback &rest options)
-                    (let*
-                        ((request (make-symbol endpoint))
-                         (owner (plist-get options :owner))
-                         (handle
-                          (appkit-register-handle owner 'function
-                                                  request
-                                                  #'misskey-http-cancel)))
-                      (push
-                       (list endpoint
-                             (lambda (payload)
-                               (appkit-retire-handle handle)
-                               (funcall callback payload))
-                             request owner)
-                       requests)
-                      request)))
-                 ((symbol-function 'misskey-http-cancel)
-                  (lambda (request) (push request canceled))))
-              (setq view (call-interactively #'misskey-home) buffer
-                    (appkit-surface-buffer view))
-              (let
-                  ((home-state (appkit-surface-model view))
-                   (home-request (car requests)))
+            (cl-letf (((symbol-function 'misskey-http-read)
+                       (lambda (endpoint _parameters callback &rest options)
+                         (let ((request (misskey-http--request-create
+                                         :callback callback :errback (plist-get options :errback))))
+                           (push (list endpoint callback request) requests)
+                           request)))
+                      ((symbol-function 'misskey-http-cancel)
+                       (lambda (request) (push request cancelled))))
+              (setq view (misskey-home) buffer (appkit-surface-buffer view))
+              (misskey-test-drain view)
+              (let ((home-request (car requests)))
                 (with-current-buffer buffer
-                  (call-interactively
-                   (lookup-key misskey-timeline-mode-map (kbd "TAB")))
-                  (let
-                      ((local-state (appkit-surface-model view))
-                       (local-request (car requests)))
-                    (should-not (eq local-state home-state))
-                    (should
-                     (eq local-state
-                         (misskey-timeline--feed-state
-                          (appkit-surface-app view) 'local)))
-                    (should
-                     (equal (car local-request) "notes/local-timeline"))
-                    (should (eq (car canceled) (nth 2 home-request)))
-                    (funcall (nth 1 home-request)
-                             (list
-                              (misskey-timeline-test--note "stale"
-                                                           "must not install")))
-                    (should-not (plist-get home-state :items))
-                    (funcall (nth 1 local-request)
-                             (list
-                              (misskey-timeline-test--note "local-1"
-                                                           "local")))
-                    (misskey-test-drain view) (goto-char (point-min))
-                    (appkit-discussion-next-entry)
-                    (should
-                     (equal (appkit-discussion-key-at-point) "local-1"))
-                    (misskey-timeline--switch-kind view 'social)
-                    (let ((social-request (car requests)))
-                      (should
-                       (equal (car social-request)
-                              "notes/hybrid-timeline"))
-                      (funcall (nth 1 social-request)
-                               (list
-                                (misskey-timeline-test--note "social-1"
-                                                             "social")))
-                      (misskey-test-drain view))
-                    (let ((request-count (length requests)))
+                  (misskey-timeline--switch-kind view 'local)
+                  (misskey-test-drain view)
+                  (should (memq (nth 2 home-request) cancelled))
+                  (let ((old-local-request (car requests)))
+                    (misskey-timeline--switch-kind view 'home)
+                    (misskey-test-drain view)
+                    (let ((new-home-request (car requests)))
+                      (funcall (nth 1 home-request)
+                               (list (misskey-timeline-test--note "stale-home" "old")))
+                      (funcall (nth 1 old-local-request)
+                               (list (misskey-timeline-test--note "stale-local" "old")))
+                      (misskey-test-drain view)
+                      (should-not (misskey-test-visible-note-keys view))
+                      (funcall (nth 1 new-home-request)
+                               (list (misskey-timeline-test--note "home-1" "one")
+                                     (misskey-timeline-test--note "home-2" "two")))
+                      (misskey-test-drain view)
+                      (should (equal (misskey-test-visible-note-keys view) '("home-1" "home-2")))
+                      (goto-char (point-min))
+                      (appkit-discussion-next-entry)
+                      (appkit-discussion-next-entry)
+                      (should (equal (appkit-discussion-key-at-point) "home-2"))
                       (misskey-timeline--switch-kind view 'local)
                       (misskey-test-drain view)
-                      (should
-                       (eq (appkit-surface-model view) local-state))
-                      (should (= (length requests) request-count))
-                      (should
-                       (equal (appkit-discussion-key-at-point) "local-1")))
-                    (misskey-timeline--switch-kind view 'social)
-                    (misskey-test-drain view)
-                    (let ((request-count (length requests)))
-                      (misskey-timeline--switch-kind view 'local t)
-                      (let ((refresh-request (car requests)))
-                        (should (= (length requests) (1+ request-count)))
-                        (should
-                         (equal (car refresh-request)
-                                "notes/local-timeline"))
-                        (funcall (nth 1 refresh-request)
-                                 (list
-                                  (misskey-timeline-test--note "local-1"
-                                                               "refreshed local")))
+                      (funcall (nth 1 (car requests))
+                               (list (misskey-timeline-test--note "local-1" "local")))
+                      (misskey-test-drain view)
+                      (let ((count (length requests)))
+                        (misskey-timeline--switch-kind view 'home)
                         (misskey-test-drain view)
-                        (should
-                         (eq (appkit-surface-model view) local-state))
-                        (should
-                         (equal (appkit-discussion-key-at-point)
-                                "local-1"))))
-                    (should
-                     (= 1
-                        (hash-table-count
-                         (appkit-app-surfaces (appkit-surface-app view))))))))))
+                        (should (= count (length requests)))
+                        (should (equal (misskey-test-visible-note-keys view) '("home-1" "home-2")))
+                        (should (equal (appkit-discussion-key-at-point) "home-2")))
+                      (misskey-timeline--switch-kind view 'local t)
+                      (misskey-test-drain view)
+                      (should (equal (caar requests) "notes/local-timeline"))
+                      (funcall (nth 1 (car requests))
+                               (list (misskey-timeline-test--note "local-2" "new")))
+                      (misskey-test-drain view)
+                      (should (equal (misskey-test-visible-note-keys view) '("local-2" "local-1")))))))))
         (misskey-timeline-test--cleanup view buffer)))))
 
 (ert-deftest misskey-home-loads-older-notes-with-stable-position ()
@@ -424,7 +375,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                            (plist-get options :owner)
                            (plist-get options :account))
                      requests))))
-              (setq view (misskey-home) buffer
+              (setq view (prog1 (misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (funcall (nth 2 (car requests))
                        (list (misskey-timeline-test--note "n3" "newest")
@@ -440,16 +391,16 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                   (unwind-protect
                       (progn
                         (setf (alist-get 'id oldest) nil)
-                        (should-error (misskey-timeline-load-more) :type
+                        (should-error (prog1 (misskey-timeline-load-more) (misskey-test-drain)) :type
                                       'error)
                         nil)
                     (setf (alist-get 'id oldest) "n2")))
-                (misskey-timeline-load-more)
+                (prog1 (misskey-timeline-load-more) (misskey-test-drain))
                 (should
                  (equal (cadar requests)
                         '(:limit 20 :allowPartial t :untilId "n2")))
                 nil
-                (should-error (misskey-timeline-load-more) :type
+                (should-error (prog1 (misskey-timeline-load-more) (misskey-test-drain)) :type
                               'user-error)
                 (funcall (nth 2 (car requests))
                          (list
@@ -465,7 +416,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                  (plist-get (misskey-timeline--view-state view)
                             :older-exhausted-p))
                 (should (string-match-p "N older" (buffer-string)))
-                (misskey-timeline-refresh)
+                (prog1 (misskey-timeline-refresh) (misskey-test-drain))
                 (should
                  (equal (cadar requests) '(:limit 20 :allowPartial t)))
                 (funcall (nth 2 (car requests))
@@ -480,7 +431,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (should-not
                  (plist-get (misskey-timeline--view-state view)
                             :older-exhausted-p))
-                (misskey-timeline-load-more)
+                (prog1 (misskey-timeline-load-more) (misskey-test-drain))
                 (should
                  (equal (cadar requests)
                         '(:limit 20 :allowPartial t :untilId "n1")))
@@ -496,7 +447,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (should
                  (string-match-p "older exhausted" (buffer-string)))
                 (let ((request-count (length requests)))
-                  (should-error (misskey-timeline-load-more) :type
+                  (should-error (prog1 (misskey-timeline-load-more) (misskey-test-drain)) :type
                                 'user-error)
                   (should (= (length requests) request-count))))))
         (misskey-timeline-test--cleanup view buffer)))))
@@ -554,7 +505,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                               (appkit-media--notify-transfer-handle
                                handle 'success file)))
                       handle))))
-              (setq view (call-interactively #'misskey-home) buffer
+              (setq view (prog1 (call-interactively #'misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view)
               (with-current-buffer buffer
@@ -624,7 +575,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                               (appkit-media--notify-transfer-handle
                                handle 'success file)))
                       handle))))
-              (setq view (call-interactively #'misskey-home) buffer
+              (setq view (prog1 (call-interactively #'misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view)
               (with-current-buffer buffer
@@ -678,7 +629,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                     (cl-incf preview-requests)
                     (appkit-media--transfer-handle-create
                      :success success :error failure))))
-              (setq view (call-interactively #'misskey-home) buffer
+              (setq view (prog1 (call-interactively #'misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view) (should (= 0 preview-requests))
               (with-current-buffer buffer
@@ -692,28 +643,37 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
 
 (ert-deftest misskey-media-sensitive-prefetch-uses-outer-row-reveal-identity ()
   (misskey-test-with-session
-    (let* ((account (misskey-timeline-test--authenticated-account))
+    (let* ((account (misskey--current-account))
            (app (misskey-app account))
+           (misskey-timeline-show-avatars nil)
+           (misskey-timeline-show-media t)
            (file (misskey-timeline-test--file "guarded" t))
-           (target (misskey-timeline-test--note "target" "target body" :files (list file)))
-           (pure-renote (misskey-timeline-test--note "pure-wrapper" nil :renote target))
-           (quote (misskey-timeline-test--note "quote-wrapper" "comment" :renote target))
-           (revealed-content (make-hash-table :test #'equal)) requested)
+           (target (misskey-timeline-test--note "target" "body" :files (list file)))
+           (notes (list (misskey-timeline-test--note "pure-wrapper" nil :renote target)
+                        (misskey-timeline-test--note "quote-wrapper" "comment" :renote target)))
+           (table (make-hash-table :test #'equal)) started)
       (with-temp-buffer
         (let ((view (misskey-test-surface
                      :app app :identity 'sensitive-prefetch
-                     :input (list :account account :revealed-content revealed-content))))
-          (cl-letf (((symbol-function 'misskey-media-request-avatar) #'ignore)
-                    ((symbol-function 'misskey-media-request-file)
-                     (lambda (_view requested-file) (push requested-file requested))))
-            (dolist (note (list pure-renote quote))
-              (clrhash revealed-content) (setq requested nil)
-              (puthash (misskey-note-id target) t revealed-content)
+                     :input (list :account account :revealed-content table))))
+          (cl-letf (((symbol-function 'appkit-media-inline-image-rendering-available-p) (lambda (&rest _) t))
+                    ((symbol-function 'appkit-media-image-cache-existing-file) (lambda (_) nil))
+                    ((symbol-function 'appkit-media-image-acquisition-start)
+                     (lambda (_context _input _observe _resolve _reject)
+                       (push 'download started)
+                       (appkit-cancellation-create :kind 'transport :cancel #'ignore))))
+            (dolist (note notes)
+              (clrhash table)
+              (setq started nil)
+              (puthash "target" t table)
               (misskey-media-prefetch-notes view (list note))
-              (should-not requested)
-              (puthash (misskey-note-id note) t revealed-content)
+              (misskey-test-drain view)
+              (should-not started)
+              (puthash (misskey-note-id note) t table)
               (misskey-media-prefetch-notes view (list note))
-              (should (equal (list file) requested)))))))))
+              (misskey-test-drain view)
+              (should (equal started '(download)))
+              (misskey-dispatch app (list :preview-cancel (list :media "guarded"))))))))))
 
 (ert-deftest misskey-home-shares-avatar-transfer-until-app-stops ()
   (misskey-test-with-session
@@ -755,7 +715,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                   (lambda (object) (eq object 'transfer)))
                  ((symbol-function 'appkit-media-cancel-transfer)
                   (lambda (_transfer) (cl-incf cancellations))))
-              (setq view (call-interactively #'misskey-home) buffer
+              (setq view (prog1 (call-interactively #'misskey-home) (misskey-test-drain)) buffer
                     (appkit-surface-buffer view))
               (misskey-test-drain view)
               (let
@@ -874,15 +834,9 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (should-not dispatched)))))
 
 (defun misskey-timeline-test--isolated-app ()
-  "Return an isolated live app for renderer state tests."
-  (let
-      ((account
-        (misskey--account-create :origin "https://example.social"
-                                 :auth-source-user "TOKEN"
-                                 :remote-user-id "self")))
-    (appkit-app-start misskey--app-type :identity
-                      (list 'timeline-test (make-symbol "app")) :input
-                      (misskey--make-session account))))
+  "Return the fixture's isolated account App for renderer tests."
+  (misskey-app (misskey--account-create :origin "https://example.social"
+                                        :auth-source-user "TOKEN" :remote-user-id "self")))
 
 (ert-deftest misskey-note-pure-renote-rejects-file-only-quotes ()
   (misskey-test-with-session
@@ -1046,7 +1000,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
 (ert-deftest misskey-media-open-commits-before-presentation-and-fences-replacement ()
   (misskey-test-with-session
     (let* ((app (misskey-timeline-test--isolated-app))
-           (state (misskey-timeline--feed-state app 'home))
+           (state (misskey-timeline--make-state (misskey--session-account (misskey--session app)) 'home))
            (file '((id . "pdf") (name . "document.pdf") (type . "application/pdf")
                    (url . "https://cdn.example/document.pdf")))
            (surface (misskey-open-surface :app app :identity 'media-effect
@@ -1085,6 +1039,64 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
         (when (buffer-live-p (appkit-surface-buffer surface))
           (kill-buffer (appkit-surface-buffer surface)))
         (appkit-app-close app)))))
+
+(ert-deftest misskey-timeline-commits-account-state-at-request-start-revision ()
+  (misskey-test-with-session
+    (let (view buffer callbacks)
+      (unwind-protect
+          (save-window-excursion
+            (cl-letf (((symbol-function 'misskey-http-read)
+                       (lambda (_endpoint _parameters callback &rest _options)
+                         (push callback callbacks)
+                         (misskey-http--request-create :callback callback :errback #'ignore))))
+              (setq view (misskey-home) buffer (appkit-surface-buffer view))
+              (misskey-test-drain view)
+              (let* ((app (appkit-surface-app view))
+                     (note (misskey-timeline-test--note "n1" "body")))
+                (setf (alist-get 'myReaction note) "old")
+                (misskey-set-note-state-values app "n1" :my-reaction "local-write")
+                (funcall (car callbacks) (list note))
+                (misskey-test-drain view)
+                (should (equal (misskey-test-visible-note-keys view) '("n1")))
+                (should (equal (misskey-note-state-value app "n1" :my-reaction nil) "local-write"))
+                (with-current-buffer buffer (misskey-timeline-refresh))
+                (misskey-test-drain view)
+                (let ((new-note (copy-tree note)))
+                  (setf (alist-get 'myReaction new-note) "server-new")
+                  (funcall (car callbacks) (list new-note)))
+                (misskey-test-drain view)
+                (should (equal (misskey-note-state-value app "n1" :my-reaction nil) "server-new")))))
+        (misskey-timeline-test--cleanup view buffer)))))
+
+(ert-deftest misskey-timeline-reopens-settled-pages-without-old-request-authority ()
+  (misskey-test-with-session
+    (let (view buffer callbacks)
+      (unwind-protect
+          (save-window-excursion
+            (cl-letf (((symbol-function 'misskey-http-read)
+                       (lambda (_endpoint _parameters callback &rest options)
+                         (push callback callbacks)
+                         (misskey-http--request-create :callback callback
+                                                       :errback (plist-get options :errback)))))
+              (setq view (misskey-home) buffer (appkit-surface-buffer view))
+              (misskey-test-drain view)
+              (funcall (car callbacks)
+                       (list (misskey-timeline-test--note "cached" "retained page")))
+              (misskey-test-drain view)
+              (with-current-buffer buffer (misskey-timeline-refresh))
+              (misskey-test-drain view)
+              (let ((stale (car callbacks)))
+                (kill-buffer buffer)
+                (setq view (misskey-home) buffer (appkit-surface-buffer view))
+                (misskey-test-drain view)
+                (should (equal (misskey-test-visible-note-keys view) '("cached")))
+                (funcall stale (list (misskey-timeline-test--note "stale" "closed request")))
+                (misskey-test-drain view)
+                (should (equal (misskey-test-visible-note-keys view) '("cached")))
+                (funcall (car callbacks) (list (misskey-timeline-test--note "fresh" "new request")))
+                (misskey-test-drain view)
+                (should (equal (misskey-test-visible-note-keys view) '("fresh" "cached"))))))
+        (misskey-timeline-test--cleanup view buffer)))))
 
 (provide 'misskey-timeline-test)
 
