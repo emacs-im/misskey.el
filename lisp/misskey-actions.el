@@ -389,7 +389,9 @@ intent but never dispatches concurrently with the lane's active write."
 
 (defun misskey-actions--perform-note
     (action &optional value raw-note-p)
-  "Perform note ACTION with VALUE at point.\n\nRAW-NOTE-P non-nil targets a pure-renote wrapper instead of its displayed note."
+  "Perform note ACTION with VALUE at point.
+
+RAW-NOTE-P non-nil targets a pure-renote wrapper instead of its displayed note."
   (let*
       ((view (misskey-actions--view))
        (note (misskey-actions--note-at-point (not raw-note-p))))

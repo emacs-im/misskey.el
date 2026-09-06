@@ -296,7 +296,9 @@
 
 (defun misskey-directory--handle-success
     (view state observation phase payload)
-  "Install relationship PAYLOAD for PHASE in VIEW STATE.\n\nOBSERVATION versions canonical entity merges."
+  "Install relationship PAYLOAD for PHASE in VIEW STATE.
+
+OBSERVATION versions canonical entity merges."
   (condition-case err
       (let*
           ((relationships

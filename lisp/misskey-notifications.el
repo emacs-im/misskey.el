@@ -277,7 +277,9 @@
 
 (defun misskey-notifications--handle-read-success
     (view state observation phase payload)
-  "Install notification PAYLOAD for PHASE in VIEW STATE.\n\nOBSERVATION versions canonical entity merges."
+  "Install notification PAYLOAD for PHASE in VIEW STATE.
+
+OBSERVATION versions canonical entity merges."
   (condition-case err
       (let*
           ((notifications

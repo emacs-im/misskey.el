@@ -189,7 +189,9 @@ User properties belong only to the visible span naming that user."
 
 (cl-defun misskey-render-note-entry
     (view note &key parent-key (depth 0) connector)
-  "Return an Appkit discussion entry rendering NOTE in VIEW.\n\nPARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
+  "Return an Appkit discussion entry rendering NOTE in VIEW.
+
+PARENT-KEY, DEPTH, and CONNECTOR describe optional thread geometry."
   (unless (appkit-surface-live-p view)
     (error "Cannot render a Misskey note into a dead view"))
   (let*

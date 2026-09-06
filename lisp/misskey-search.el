@@ -86,7 +86,10 @@
 
 ;;;###autoload
 (defun misskey-search (query &optional account)
-  "Search Misskey notes for QUERY under ACCOUNT.\n\nEach invocation creates a fresh view whose pagination is independent of every\nother search and timeline.  ACCOUNT defaults to current customization."
+  "Search Misskey notes for QUERY under ACCOUNT.
+
+Each invocation creates a fresh view whose pagination is independent of every
+other search and timeline.  ACCOUNT defaults to current customization."
   (interactive "sSearch Misskey notes: ")
   (unless (and (stringp query) (string-match-p "[^[:space:]]" query))
     (user-error "Misskey search query cannot be empty"))

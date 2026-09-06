@@ -642,7 +642,11 @@ Interactively, choose `public', `home', or `followers'."
     (message "Removed note %d." (1+ index))))
 
 (defun misskey-compose-send ()
-  "Publish the current Misskey draft once.\n\nLocal attachments upload to Drive before their note is created.  Successful\nuploads and confirmed note prefixes are persisted immediately, so retries\nreuse Drive files and never recreate confirmed notes."
+  "Publish the current Misskey draft once.
+
+Local attachments upload to Drive before their note is created.  Successful
+uploads and confirmed note prefixes are persisted immediately, so retries
+reuse Drive files and never recreate confirmed notes."
   (interactive)
   (when (appkit-compose-operation-active-p)
     (user-error "This note is already being published"))

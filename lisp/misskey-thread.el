@@ -213,7 +213,9 @@
 
 (defun misskey-thread--finish
     (view state operation phase replies &optional focus ancestors)
-  "Install REPLIES for VIEW STATE OPERATION and PHASE.\n\nFOCUS and ANCESTORS hold the staged initial thread context."
+  "Install REPLIES for VIEW STATE OPERATION and PHASE.
+
+FOCUS and ANCESTORS hold the staged initial thread context."
   (when (misskey-read-finish operation)
     (let*
         ((loaded-p (plist-get state :loaded-p))
@@ -259,7 +261,9 @@
 
 (defun misskey-thread--load-replies
     (view state operation phase &optional focus ancestors until-id)
-  "Load reply PHASE for VIEW STATE OPERATION, staging FOCUS and ANCESTORS.\n\nUNTIL-ID is the required cursor for an older page."
+  "Load reply PHASE for VIEW STATE OPERATION, staging FOCUS and ANCESTORS.
+
+UNTIL-ID is the required cursor for an older page."
   (when
       (and (eq phase 'older)
            (not
@@ -387,7 +391,9 @@
     (user-error "Current buffer is not a Misskey thread")))
 
 (defun misskey-thread-open (note-id &optional account)
-  "Open NOTE-ID's thread for ACCOUNT.\n\nACCOUNT defaults to the account selected by current customization."
+  "Open NOTE-ID's thread for ACCOUNT.
+
+ACCOUNT defaults to the account selected by current customization."
   (unless (and (stringp note-id) (not (string-empty-p note-id)))
     (user-error "Misskey note ID is required"))
   (let*

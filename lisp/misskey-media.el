@@ -258,7 +258,9 @@ files stay hidden until their note is explicitly revealed."
 
 (defun misskey-media-insert-file
     (view file prefix properties hidden-p)
-  "Insert FILE for VIEW with PREFIX and PROPERTIES.\n\nWhen HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
+  "Insert FILE for VIEW with PREFIX and PROPERTIES.
+
+When HIDDEN-P is non-nil, reserve only a sensitive-media placeholder."
   (let*
       ((start (point)) (preview-url (misskey-file-preview-url file))
        (entry

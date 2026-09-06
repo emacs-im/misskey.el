@@ -238,7 +238,9 @@
 
 (defun misskey-timeline--handle-success
     (view state observation phase payload)
-  "Install PAYLOAD in VIEW STATE for request PHASE.\n\nOBSERVATION versions canonical note merges."
+  "Install PAYLOAD in VIEW STATE for request PHASE.
+
+OBSERVATION versions canonical note merges."
   (condition-case err
       (let*
           ((notes (misskey-note-validate-list payload))
@@ -360,7 +362,9 @@
                              :preserve-window-start t)))
 
 (defun misskey-timeline--switch-kind (view kind &optional refresh-p)
-  "Switch timeline VIEW to KIND.\n\nWhen REFRESH-P is non-nil, refresh KIND after switching."
+  "Switch timeline VIEW to KIND.
+
+When REFRESH-P is non-nil, refresh KIND after switching."
   (let*
       ((state (misskey-timeline--view-state view))
        (current (plist-get state :kind))
@@ -435,7 +439,9 @@
     (user-error "Current buffer is not a Misskey timeline")))
 
 (defun misskey-timeline-open (&optional kind)
-  "Open the selected account's timeline buffer at KIND.\n\nKIND defaults to `home'.  Opening an existing buffer refreshes KIND."
+  "Open the selected account's timeline buffer at KIND.
+
+KIND defaults to `home'.  Opening an existing buffer refreshes KIND."
   (let*
       ((kind (or kind 'home))
        (_spec (misskey-timeline--kind-spec kind))

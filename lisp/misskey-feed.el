@@ -162,7 +162,9 @@ replaces the default empty result text."
 
 (defun misskey-feed--handle-success
     (view state observation phase payload)
-  "Install PAYLOAD in VIEW STATE for PHASE.\n\nOBSERVATION versions canonical note merges."
+  "Install PAYLOAD in VIEW STATE for PHASE.
+
+OBSERVATION versions canonical note merges."
   (condition-case err
       (let*
           ((notes (misskey-note-validate-list payload))
@@ -230,7 +232,9 @@ replaces the default empty result text."
     parameters))
 
 (defun misskey-feed-request (view phase)
-  "Start VIEW's note request for PHASE.\n\nPHASE is `initial', `refresh', or `older'."
+  "Start VIEW's note request for PHASE.
+
+PHASE is `initial', `refresh', or `older'."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Misskey feed request phase: %S" phase))
   (let*

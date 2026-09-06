@@ -374,7 +374,10 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
 
 ;;;###autoload
 (defun misskey-profile-open (user &optional account)
-  "Open USER's Misskey profile for ACCOUNT.\n\nUSER is a user object, stable ID, or `@username[@host]'.  ACCOUNT defaults to\nthe account selected by current customization."
+  "Open USER's Misskey profile for ACCOUNT.
+
+USER is a user object, stable ID, or `@username[@host]'.  ACCOUNT defaults to
+the account selected by current customization."
   (interactive "sMisskey user ID or @username[@host]: ")
   (let*
       ((target (or account (misskey--current-account)))
