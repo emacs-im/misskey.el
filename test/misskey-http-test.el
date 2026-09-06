@@ -28,35 +28,30 @@
 (ert-deftest misskey-http-decodes-successful-created-note ()
   (should
    (equal
-    (misskey-http--decode-response
-     (make-plz-response
-      :status 200 :body "{\"createdNote\":{\"id\":\"note-1\"}}")
-     t)
+    (misskey-http--decode-status-body
+     200 "{\"createdNote\":{\"id\":\"note-1\"}}" t)
     '(success (createdNote (id . "note-1"))))))
 
 (ert-deftest misskey-http-decodes-api-error-with-code ()
   (let ((message
          (cdr
-          (misskey-http--decode-response
-           (make-plz-response
-            :status 400
-            :body "{\"error\":{\"message\":\"Too long\",\"code\":\"MAX_LENGTH\"}}")
-           t))))
+          (misskey-http--decode-status-body
+           400 "{\"error\":{\"message\":\"Too long\",\"code\":\"MAX_LENGTH\"}}" t))))
     (should (string-match-p "unknown" message))
     (should (string-match-p "HTTP 400" message))
     (should (string-match-p "Too long (MAX_LENGTH)" message))))
 
 (ert-deftest misskey-http-decodes-empty-read-array ()
   (should (equal
-           (misskey-http--decode-response
-            (make-plz-response :status 200 :body "[]") nil)
+           (misskey-http--decode-status-body
+            200 "[]" nil)
            '(success))))
 
 (ert-deftest misskey-http-rejects-oversized-response-before-parsing ()
   (let ((misskey-http--response-limit 4))
     (should-error
-     (misskey-http--decode-response
-      (make-plz-response :status 200 :body "12345") nil))))
+     (misskey-http--decode-status-body
+      200 "12345" nil))))
 
 (ert-deftest misskey-http-serializes-explicit-json-sentinels-and-vectors ()
   (should
@@ -177,10 +172,10 @@
   (let* ((buffer (generate-new-buffer " *misskey-progress-stderr*"))
          events
          (request
-           (misskey-http--request-create
-            :callback #'ignore :errback #'ignore :writep t
-            :progress (lambda (event) (push (plist-get event :progress)
-                                            events))))
+          (misskey-http--request-create
+           :callback #'ignore :errback #'ignore :writep t
+           :progress (lambda (event) (push (plist-get event :progress)
+                                           events))))
          (process
           (make-pipe-process :name "misskey-progress-stderr"
                              :buffer buffer :noquery t)))
@@ -215,11 +210,11 @@
          (buffer (generate-new-buffer " *misskey-cap-test*"))
          failure
          (request
-           (misskey-http--request-create
-            :callback #'ert-fail
-            :errback (lambda (message) (setq failure message))
-            :writep t
-            :buffers (list buffer)))
+          (misskey-http--request-create
+           :callback #'ert-fail
+           :errback (lambda (message) (setq failure message))
+           :writep t
+           :buffers (list buffer)))
          (process
           (make-process :name "misskey-cap-test" :command '("cat")
                         :buffer buffer :noquery t)))
@@ -243,11 +238,11 @@
            (buffer (generate-new-buffer " *misskey-hostile-chunk*"))
            failure
            (request
-             (misskey-http--request-create
-              :callback #'ert-fail
-              :errback (lambda (message) (setq failure message))
-              :writep nil
-              :buffers (list buffer)))
+            (misskey-http--request-create
+             :callback #'ert-fail
+             :errback (lambda (message) (setq failure message))
+             :writep nil
+             :buffers (list buffer)))
            (process
             (make-process :name "misskey-hostile-chunk" :command '("cat")
                           :buffer buffer :coding 'binary :noquery t)))
@@ -264,8 +259,8 @@
          (misskey-http--response-limit 100)
          (buffer (generate-new-buffer " *misskey-header-test*"))
          (request
-           (misskey-http--request-create
-            :callback #'ignore :errback #'ert-fail :writep nil))
+          (misskey-http--request-create
+           :callback #'ignore :errback #'ert-fail :writep nil))
          (process
           (make-process :name "misskey-header-test" :command '("cat")
                         :buffer buffer :noquery t)))
@@ -299,8 +294,8 @@
 
 (ert-deftest misskey-http-partial-start-cleans-stderr-and-buffers ()
   (let ((request
-          (misskey-http--request-create
-           :callback #'ignore :errback #'ignore :writep nil))
+         (misskey-http--request-create
+          :callback #'ignore :errback #'ignore :writep nil))
         (real-make-process (symbol-function 'make-process))
         created-stderr)
     (cl-letf (((symbol-function 'make-pipe-process)

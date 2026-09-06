@@ -149,36 +149,6 @@ valid empty array distinct from malformed JSON, which returns nil."
              (format "Misskey request failed: %s" api-error) writep)))
      (t (cons 'success payload)))))
 
-(defun misskey-http--decode-response (response writep)
-  "Decode Plz RESPONSE using WRITEP outcome semantics.
-
-Return a cons whose car is `success' or `error' and whose cdr is the decoded
-payload or readable failure message."
-  (unless (plz-response-p response)
-    (error "Misskey transport returned an invalid response"))
-  (misskey-http--decode-status-body
-   (plz-response-status response) (plz-response-body response) writep))
-
-(defun misskey-http--plz-error-result (failure writep)
-  "Return decoded result for Plz FAILURE using WRITEP semantics."
-  (unless (plz-error-p failure)
-    (error "Misskey transport returned an invalid failure"))
-  (if-let* ((response (plz-error-response failure)))
-      (misskey-http--decode-response response writep)
-    (let* ((curl-error (plz-error-curl-error failure))
-           (message
-            (or (plz-error-message failure)
-                (and curl-error
-                     (format "curl exited with code %s%s"
-                             (car curl-error)
-                             (if (cdr curl-error)
-                                 (format ": %s" (cdr curl-error))
-                               "")))
-                "the transport failed without a response")))
-      (cons 'error
-            (misskey-http--outcome-message
-             (format "Misskey request failed: %s" message) writep)))))
-
 (defun misskey-http--cleanup-transport (request)
   "Terminate processes and kill buffers owned by REQUEST."
   (dolist (process
@@ -216,20 +186,17 @@ payload or readable failure message."
       (_ (error "Misskey response decoder returned an invalid result")))
     t))
 
-(defun misskey-http--finish (request decoder value)
-  "Decode VALUE with DECODER and settle REQUEST."
+(defun misskey-http--finish (request status body)
+  "Decode HTTP STATUS and BODY, then settle REQUEST."
   (unless (misskey-http--request-settled-p request)
     (let ((result
            (condition-case err
-               (funcall decoder value
-                        (misskey-http--request-writep request))
+               (misskey-http--decode-status-body status body (misskey-http--request-writep request))
              (error
-              (cons
-               'error
-               (misskey-http--outcome-message
-                (format "Misskey response processing failed: %s"
-                        (error-message-string err))
-                (misskey-http--request-writep request)))))))
+              (cons 'error
+                    (misskey-http--outcome-message
+                     (format "Misskey response processing failed: %s" (error-message-string err))
+                     (misskey-http--request-writep request)))))))
       (misskey-http--deliver request result))))
 
 (defun misskey-http--cancel-request (request)
@@ -433,35 +400,20 @@ unterminated suffix."
       (when-let* ((stderr (process-get process 'misskey-http-stderr-process)))
         (misskey-http--flush-stderr-pending stderr))
       (unless (misskey-http--request-settled-p request)
-        (if (and (eq (process-status process) 'exit)
-                 (zerop (process-exit-status process)))
-            (let ((status (process-get process 'misskey-http-status)))
-              (if (integerp status)
-                  (misskey-http--finish
-                   request #'misskey-http--decode-status-value
-                   (cons status
-                         (decode-coding-string
-                          (misskey-http--buffer-contents
-                           (process-buffer process))
-                          'utf-8)))
-                (misskey-http--deliver
-                 request
-                 (cons 'error
-                       (misskey-http--outcome-message
-                        "curl returned no valid HTTP status"
-                        (misskey-http--request-writep request))))))
-          (misskey-http--deliver
-           request
-           (cons
-            'error
-            (misskey-http--outcome-message
-             (format "Misskey request failed: %s"
-                     (misskey-http--curl-error-detail process))
-             (misskey-http--request-writep request)))))))))
-
-(defun misskey-http--decode-status-value (value writep)
-  "Decode (STATUS . BODY) VALUE using WRITEP outcome semantics."
-  (misskey-http--decode-status-body (car value) (cdr value) writep))
+        (let ((completed-p (and (eq (process-status process) 'exit)
+                                (zerop (process-exit-status process))))
+              (status (process-get process 'misskey-http-status)))
+          (if (and completed-p (integerp status))
+              (misskey-http--finish
+               request status
+               (decode-coding-string (misskey-http--buffer-contents (process-buffer process)) 'utf-8))
+            (misskey-http--deliver
+             request
+             (cons 'error
+                   (misskey-http--outcome-message
+                    (if completed-p "curl returned no valid HTTP status"
+                      (format "Misskey request failed: %s" (misskey-http--curl-error-detail process)))
+                    (misskey-http--request-writep request))))))))))
 
 (defun misskey-http--start-curl
     (request program command config data response-name stderr-name)
@@ -520,65 +472,31 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
     (error "Misskey request callback is not callable"))
   (unless (memq writep '(nil t))
     (error "Misskey request write flag must be boolean"))
-  (let*
-      ((error-fn
-        (or errback (lambda (message) (message "%s" message))))
-       (request
-         (misskey-http--request-create :callback callback :errback
-                                       error-fn :writep writep))
-       token)
+  (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
+         (request (misskey-http--request-create :callback callback :errback error-fn :writep writep))
+         token)
     (unless (functionp error-fn)
       (error "Misskey request error callback is not callable"))
     (condition-case err
-        (let*
-            ((program
-              (or (executable-find plz-curl-program)
-                  (error "The curl executable is unavailable: %s"
-                         plz-curl-program)))
-             (request-url
-              (misskey-http--endpoint-url endpoint account))
-             (request-owner (or owner (misskey-app account)))
-             (token-value (misskey--auth-token account))
-             (data (misskey-http--json-data parameters))
-             (command
-              (append misskey-http--curl-args
-                      (list "--show-error"
-                            "--suppress-connect-headers" "--url"
-                            request-url "--request" "POST" "--header"
-                            "Content-Type: application/json"
-                            "--header" "Accept: application/json"
-                            "--header" "Expect:" "--dump-header" "-"
-                            "--config" "-")))
-             (config
-              (concat
-               (misskey-http--curl-authorization-config token-value)
-               "data-binary = \"@-\"\n")))
+        (let* ((program (or (executable-find plz-curl-program)
+                            (error "The curl executable is unavailable: %s" plz-curl-program)))
+               (request-url (misskey-http--endpoint-url endpoint account))
+               (request-owner (or owner (misskey-app account)))
+               (token-value (misskey--auth-token account))
+               (data (misskey-http--json-data parameters))
+               (command (misskey-http--json-command request-url))
+               (config (concat (misskey-http--curl-authorization-config token-value)
+                               "data-binary = \"@-\"\n")))
           (setq token token-value)
           (setf (misskey-http--request-token request) token-value)
           (let ((inhibit-quit t))
-            (misskey-http--start-curl request program command config
-                                      data " *misskey-json-response*"
-                                      " *misskey-json-stderr*")
+            (misskey-http--start-curl request program command config data
+                                      " *misskey-json-response*" " *misskey-json-stderr*")
             (unless (misskey-http--request-settled-p request)
               (setf (misskey-http--request-handle request)
-                    (appkit-register-handle request-owner 'function
-                                            request
-                                            #'misskey-http--cancel-request))))
+                    (appkit-register-handle request-owner 'function request #'misskey-http--cancel-request))))
           request)
-      ((error quit)
-       (let*
-           ((quitp (eq (car err) 'quit)) (inhibit-quit t)
-            (dispatched-p (misskey-http--request-dispatched-p request))
-            (failure
-             (misskey-http--outcome-message
-              (misskey-http--safe-error-message err token)
-              (and dispatched-p writep))))
-         (unless (misskey-http--request-settled-p request)
-           (let ((process (misskey-http--request-process request)))
-             (when (and (processp process) (process-live-p process))
-               (delete-process process)))
-           (misskey-http--deliver request (cons 'error failure)))
-         (when quitp (signal 'quit nil)) nil)))))
+      ((error quit) (misskey-http--startup-failed request err token)))))
 
 (cl-defun misskey-http--request
     (endpoint parameters callback &key errback owner account writep)
@@ -597,11 +515,11 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
                                             reject)
                                   (let
                                       ((request
-                                         (misskey-http--start-request
-                                          endpoint input resolve
-                                          :errback reject :owner
-                                          surface :account account
-                                          :writep writep)))
+                                        (misskey-http--start-request
+                                         endpoint input resolve
+                                         :errback reject :owner
+                                         surface :account account
+                                         :writep writep)))
                                     (when request
                                       (appkit-cancellation-create
                                        :kind 'transport :cancel
@@ -661,8 +579,8 @@ RESPONSE-NAME and STDERR-NAME name the bounded temporary buffers."
   "Upload FILE and pass its decoded response to CALLBACK.
 
 ERRBACK receives readable failures.  OWNER defaults to ACCOUNT's Appkit
-session and owns cancellation.  PROGRESS, when callable, receives a plist
-with `:progress' as a 0-1 float measured from curl's upload meter.
+session and owns cancellation.  PROGRESS receives a plist with a 0-1
+`:progress' value from curl's upload meter.
 Return the opaque request, or nil when setup fails."
   (unless (functionp callback)
     (error "Misskey upload callback is not callable"))
@@ -670,19 +588,14 @@ Return the opaque request, or nil when setup fails."
     (error "Misskey upload progress callback is not callable"))
   (let* ((error-fn (or errback (lambda (message) (message "%s" message))))
          (request (misskey-http--request-create
-                   :callback callback :errback error-fn :writep t
-                   :progress progress))
-         (path (expand-file-name file))
-         token)
+                   :callback callback :errback error-fn :writep t :progress progress))
+         (path (expand-file-name file)) token)
     (unless (functionp error-fn)
       (error "Misskey upload error callback is not callable"))
     (condition-case err
-        (let* ((program
-                (or (executable-find plz-curl-program)
-                    (error "The curl executable is unavailable: %s"
-                           plz-curl-program)))
-               (request-url
-                (misskey-http--endpoint-url "drive/files/create" account))
+        (let* ((program (or (executable-find plz-curl-program)
+                            (error "The curl executable is unavailable: %s" plz-curl-program)))
+               (request-url (misskey-http--endpoint-url "drive/files/create" account))
                (request-owner (or owner (misskey-app account)))
                (token-value (misskey--auth-token account))
                (command (misskey-http--upload-command request-url path))
@@ -690,32 +603,13 @@ Return the opaque request, or nil when setup fails."
           (setq token token-value)
           (setf (misskey-http--request-token request) token-value)
           (let ((inhibit-quit t))
-            (misskey-http--start-curl
-             request program command config ""
-             " *misskey-upload-response*" " *misskey-upload-stderr*")
+            (misskey-http--start-curl request program command config ""
+                                      " *misskey-upload-response*" " *misskey-upload-stderr*")
             (unless (misskey-http--request-settled-p request)
               (setf (misskey-http--request-handle request)
-                    (appkit-register-handle
-                     request-owner 'function request
-                     #'misskey-http--cancel-request))))
+                    (appkit-register-handle request-owner 'function request #'misskey-http--cancel-request))))
           request)
-      ((error quit)
-       (let* ((quitp (eq (car err) 'quit))
-              (inhibit-quit t)
-              (dispatched-p
-               (misskey-http--request-dispatched-p request))
-              (failure
-               (misskey-http--outcome-message
-                (misskey-http--safe-error-message err token)
-                dispatched-p)))
-         (when-let* ((process (misskey-http--request-process request)))
-           (when (process-live-p process)
-             (delete-process process)))
-         (unless (misskey-http--request-settled-p request)
-           (misskey-http--deliver request (cons 'error failure)))
-         (when quitp
-           (signal 'quit nil))
-         nil)))))
+      ((error quit) (misskey-http--startup-failed request err token)))))
 
 (defun misskey-http--public-read-sync (endpoint parameters &optional account)
   "Synchronously send PARAMETERS to unauthenticated API ENDPOINT.
@@ -729,22 +623,11 @@ ACCOUNT selects the server origin.  Return the decoded response."
          (data (misskey-http--json-data parameters))
          result
          (request
-           (misskey-http--request-create
-            :callback (lambda (payload) (setq result (cons 'success payload)))
-            :errback (lambda (message) (setq result (cons 'error message)))
-            :writep nil))
-         (command
-          (append
-           misskey-http--curl-args
-           (list "--show-error"
-                 "--suppress-connect-headers"
-                 "--url" request-url
-                 "--request" "POST"
-                 "--header" "Content-Type: application/json"
-                 "--header" "Accept: application/json"
-                 "--header" "Expect:"
-                 "--dump-header" "-"
-                 "--config" "-")))
+          (misskey-http--request-create
+           :callback (lambda (payload) (setq result (cons 'success payload)))
+           :errback (lambda (message) (setq result (cons 'error message)))
+           :writep nil))
+         (command (misskey-http--json-command request-url))
          (process
           (misskey-http--start-curl
            request program command "data-binary = \"@-\"\n" data
@@ -790,6 +673,28 @@ Return the opaque in-flight request, or nil when setup fails."
   (misskey-http--request
    endpoint parameters callback
    :errback errback :owner owner :account account :writep t))
+
+(defun misskey-http--json-command (url)
+  "Return bounded curl arguments for a JSON POST to URL."
+  (append misskey-http--curl-args
+          (list "--show-error" "--suppress-connect-headers" "--url" url
+                "--request" "POST" "--header" "Content-Type: application/json"
+                "--header" "Accept: application/json" "--header" "Expect:"
+                "--dump-header" "-" "--config" "-")))
+
+(defun misskey-http--startup-failed (request error-data token)
+  "Stop partial REQUEST startup and report ERROR-DATA with TOKEN redacted."
+  (let ((inhibit-quit t))
+    (unless (misskey-http--request-settled-p request)
+      (let ((process (misskey-http--request-process request)))
+        (when (and (processp process) (process-live-p process)) (delete-process process)))
+      (misskey-http--deliver
+       request (cons 'error
+                     (misskey-http--outcome-message
+                      (misskey-http--safe-error-message error-data token)
+                      (and (misskey-http--request-dispatched-p request)
+                           (misskey-http--request-writep request))))))
+    (when (eq (car error-data) 'quit) (signal 'quit nil))))
 
 (provide 'misskey-http)
 
