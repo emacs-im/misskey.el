@@ -24,6 +24,7 @@
 
 ### Fixed
 
+- Note views enable native soft wrapping by default, preserving avatar and reply indentation on continuation lines.
 - Compose uses Appkit's chatbuf surface: generated context, status, attachment rows, and committed parts no longer share the editable input region.
 - Persisting completed uploads and confirmed thread parts no longer cancels the active publication operation.
 - Successful Drive uploads remain attached to a failed draft, avoiding duplicate uploads on a deliberate retry of note creation.

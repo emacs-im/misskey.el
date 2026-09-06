@@ -63,7 +63,8 @@
 (define-derived-mode misskey-profile-mode special-mode "Misskey-Profile"
   "Major mode for one Misskey user profile."
   (setq-local header-line-format '(:eval (misskey-profile--header-line)))
-  (setq-local line-spacing 0))
+  (setq-local line-spacing 0)
+  (visual-line-mode 1))
 
 (defun misskey-profile--current-view ()
   "Return the current live Misskey profile view, or nil."

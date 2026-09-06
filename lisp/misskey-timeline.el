@@ -62,7 +62,8 @@
   "Major mode for authenticated Misskey timelines."
   (setq-local header-line-format
               '(:eval (misskey-timeline--header-line)))
-  (setq-local line-spacing 0))
+  (setq-local line-spacing 0)
+  (visual-line-mode 1))
 
 (defun misskey-timeline--make-state (account kind)
   "Return fresh Surface-owned state for ACCOUNT's timeline KIND."

@@ -47,7 +47,8 @@
 (define-derived-mode misskey-search-mode special-mode "Misskey-Search"
   "Major mode for one independent Misskey note search."
   (setq-local header-line-format nil)
-  (setq-local line-spacing 0))
+  (setq-local line-spacing 0)
+  (visual-line-mode 1))
 
 (defun misskey-search--current-view ()
   "Return the current live Misskey search view, or nil."

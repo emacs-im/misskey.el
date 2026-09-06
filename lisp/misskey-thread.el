@@ -50,7 +50,8 @@
 (define-derived-mode misskey-thread-mode special-mode "Misskey-Thread"
   "Major mode for one Misskey note thread."
   (setq-local header-line-format nil)
-  (setq-local line-spacing 0))
+  (setq-local line-spacing 0)
+  (visual-line-mode 1))
 
 (defun misskey-thread--state (view)
   "Return VIEW's validated thread state."
