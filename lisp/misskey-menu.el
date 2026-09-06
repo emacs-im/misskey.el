@@ -190,9 +190,10 @@ Used as Transient advice for both interactive argument reading and execution."
          (format "localOnly: %s" (if misskey-compose-local-only "yes" "no"))))
     "localOnly"))
 
-;;;###autoload
-(transient-define-prefix misskey-menu nil
-  "Browse Misskey views and act on the originating view's context.\nOutside a live Misskey view, only global open commands are available."
+;;;###autoload (autoload 'misskey-menu "misskey-menu" nil t)
+(transient-define-prefix misskey-menu ()
+  "Browse Misskey views and act on the originating view's context.
+Outside a live Misskey view, only global open commands are available."
   [["Open" :advice* misskey-menu--in-source ("h" "Home" misskey-home)
     ("n" "Notifications" misskey-notifications)
     ("s" "Search notes" misskey-search)
@@ -248,8 +249,8 @@ Used as Transient advice for both interactive argument reading and execution."
   (interactive) (require 'misskey)
   (transient-setup 'misskey-menu nil nil :scope (current-buffer)))
 
-;;;###autoload
-(transient-define-prefix misskey-compose-menu nil
+;;;###autoload (autoload 'misskey-compose-menu "misskey-menu" nil t)
+(transient-define-prefix misskey-compose-menu ()
   "Edit the originating Misskey draft's live controls; publish only with C-c C-c."
   :refresh-suffixes t
   [:description misskey-menu--draft-status

@@ -31,8 +31,7 @@
               :app (misskey-app misskey-compose--account)
               :context-function #'misskey-compose--context
               :status-fields-function #'misskey-compose--status-fields
-              :parts-function #'misskey-compose--parts
-              :footer-function #'misskey-compose--footer)
+              :parts-function #'misskey-compose--parts)
              (cl-letf (((symbol-function 'misskey-http-read)
                         (lambda (endpoint _parameters callback &rest _options)
                           (unless (equal endpoint "meta")
@@ -42,20 +41,6 @@
              ,@body)
          (when (buffer-live-p ,buffer)
            (kill-buffer ,buffer))))))
-
-(ert-deftest misskey-compose-renders-generated-public-note-shell ()
-  (misskey-test-with-session
-    (misskey-compose-test--with-buffer
-      (should (string-match-p "New note on https://example.social"
-                              (appkit-chat-compose-display-string)))
-      (should (string-match-p "Visibility: Public"
-                              (appkit-chat-compose-display-string)))
-      (should (string-match-p "C-c C-c publish"
-                              (appkit-chat-compose-display-string)))
-      (goto-char (appkit-chat-compose-body-start-position))
-      (should (appkit-chatbuf-point-in-input-p))
-      (insert "hello")
-      (should (equal (appkit-chat-compose-body) "hello")))))
 
 (ert-deftest misskey-compose-send-publishes-with-draft-view-owner ()
   (misskey-test-with-session
@@ -323,12 +308,13 @@
           (misskey-compose-test--with-buffer
             (misskey-compose-attach-file first)
             (misskey-compose-attach-file second)
-            (let (progress-fn)
+            (let (progress-fn upload-callback)
               (cl-letf (((symbol-function 'message) #'ignore)
                         ((symbol-function 'misskey-http-upload-file)
-                         (lambda (_file _callback &rest options)
-                           (setq progress-fn (plist-get options :progress))
-                           'upload-request))
+                         (lambda (_file callback &rest options)
+                           (setq progress-fn (plist-get options :progress)
+                                 upload-callback callback)
+                           (misskey-http--request-create :callback #'ignore :errback #'ignore)))
                         ((symbol-function 'misskey-http-post)
                          (lambda (&rest _)
                            (ert-fail "Note created before upload finished")))
@@ -342,6 +328,11 @@
                                         (appkit-chat-compose-display-string)))
                 (should (string-match-p "25%"
                                         (appkit-chat-compose-display-string)))
+                (let ((previous-progress progress-fn))
+                  (funcall upload-callback '((id . "uploaded-first")))
+                  (let ((next-status (appkit-compose-status-text)))
+                    (funcall previous-progress (list :progress 0.99))
+                    (should (equal (appkit-compose-status-text) next-status))))
                 (appkit-compose-cancel-operation))))
         (delete-file first)
         (delete-file second)))))

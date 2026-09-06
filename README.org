@@ -1,34 +1,15 @@
 #+title: misskey.el
 #+options: toc:nil num:nil
 
-* What it is
-
 ~misskey.el~ is an Appkit-backed Emacs client for Misskey-compatible
-servers.  It provides timelines, threads, profiles, search,
-notifications, media previews, multi-note composition with Drive
-attachments, and contextual note and user actions.
+servers.  It provides timelines, threads, profiles, search, notifications,
+media previews, multi-note composition with Drive attachments, and
+contextual Note and user actions.
 
-* Install
+See the [[file:docs/misskey.org][manual]] for installation and authorization,
+browsing and writing workflows, failure recovery, configuration, and
+implementation boundaries.
 
-Emacs 32.0, Appkit 0.3.0, Plz 0.9.1, Transient 0.13.7, ~curl~, and
-~uuidgen~ are required.  Evil integration is optional.  Put this
-repository's ~lisp/~ directory and its dependencies on ~load-path~, then:
-
-#+begin_src emacs-lisp
-(require 'misskey)
-#+end_src
-
-* Authorize
-
-#+begin_src emacs-lisp
-(setq misskey-instance-url "https://example.social"
-      misskey-auth-source-user "alice")
-#+end_src
-
-The origin is HTTPS scheme, host, and optional non-default port only.
-The credential label locates one encrypted auth-source record; it
-need not equal the Misskey username.
-
-Run ~M-x misskey-authorize~, then ~M-x misskey-home~.  Keys, compose,
-media, and write safety are in the
-[[file:docs/user.org][user guide]].
+Start browsing with ~M-x misskey-home~.  The ~?~ browsing menu and
+~C-c C-o~ draft menu expose the available operations; optional Evil
+integration supplies client-local bindings without changing global maps.

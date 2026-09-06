@@ -1,0 +1,289 @@
+#+title: misskey.el
+#+options: toc:2 num:nil
+
+* Getting started
+
+** Install
+
+Require Emacs 32.0, Appkit 0.3.0, Plz 0.9.1, Transient 0.13.7,
+~curl~, and ~uuidgen~.  Evil is optional.  Add the client's ~lisp/~
+directory and its dependencies to ~load-path~, then:
+
+#+begin_src emacs-lisp
+(require 'misskey)
+(setq misskey-instance-url "https://example.social"
+      misskey-auth-source-user "alice")
+#+end_src
+
+Run ~M-x misskey-authorize~, then ~M-x misskey-home~.  Home and Compose
+also start authorization when no credential exists.
+
+** Account and authorization
+
+An instance origin is HTTPS scheme, host, and optional non-default port.
+It must not contain credentials, a path, a query, or a fragment.
+
+~misskey-auth-source-user~ is a local credential label, not a remote
+username.  Account identity is the instance origin plus the authenticated
+remote User ID.  Users mentioned in Notes, including remote users, do not
+select credentials.
+
+MiAuth opens a fresh browser consent session.  The bearer token and stable
+User ID are stored together in the first configured encrypted
+netrc/authinfo source ending in ~.gpg~.  Plaintext storage is refused.
+Legacy token-only records require reauthorization, not hand editing.
+
+Requested scopes are ~read:account~, ~read:notifications~, ~write:notes~,
+~write:reactions~, ~write:favorites~, ~write:following~,
+~write:notifications~, and ~write:drive~.  Existing credentials do not gain
+new scopes automatically.  Reauthorizing replaces the credential and its
+live session atomically.
+
+For a non-default HTTPS port, the auth-source service label is
+~misskey-PORT~, such as ~misskey-8443~.
+
+* Reading and navigation
+
+** Open a view
+
+| Command | View |
+|---------+------|
+| ~misskey-home~ | Home timeline |
+| ~misskey-thread~ | Thread by Note ID |
+| ~misskey-profile-open~ | User by ID or ~@user[@host]~ |
+| ~misskey-search~ | Note text search |
+| ~misskey-search-tag~ | Exact hashtag search |
+| ~misskey-notifications~ | Unread notifications |
+
+~?~ or ~M-x misskey-menu~ opens the browsing Transient.  It offers global
+view-opening commands and actions for the current Note, link, or user.
+Unavailable actions are inapt.  Commands act in the originating buffer,
+not the popup.
+
+** Timelines, profiles, and threads
+
+Timeline ~TAB~ cycles four policies while retaining each one's loaded
+Notes and position:
+
+| Kind | Content |
+|------+---------|
+| Home | The account's subscribed timeline |
+| Local | Local-instance Notes |
+| Social | Home and Local combined |
+| Global | Visible local and federated Notes |
+
+Settled pages remain cached for the account when its timeline Surface
+closes.  Reopening refreshes the selected mode without reviving an old
+request.  Older-page loading preserves the current Note's position.
+
+Profile ~TAB~ cycles Notes, Notes + replies, and Media; ~f~ and ~F~ open
+followers and following.  A thread shows its focused Note, visible
+ancestor chain, and replies.  Each search invocation owns independent
+results, cursor, request, and content-warning state.
+
+Note views use Appkit's discussion mode and native soft wrapping.  Long
+text and links wrap at the window edge with avatar and reply indentation
+preserved.
+
+** Notes, links, and media
+
+A pure renote has its own identity but displays another Note's content.
+Reply, quote, and reaction actions use that displayed Note; deletion acts
+on the exact row, so deleting your renote does not delete its original.
+A quote contains its own text alongside the referenced Note.
+
+HTTP(S) links, mentions, and hashtags are actionable in ordinary and quoted
+text without changing copied text.  Code and ~<plain>~ content stay
+literal.  A bare mention in a remote author's text resolves on that
+author's server.  Hashtags use ~notes/search-by-tag~, not text search.
+
+Own-instance Note and profile URLs open existing client views.  Recognized
+remote object URLs resolve through the initiating account's instance;
+credentials are never sent to the linked host.  Other web links open in
+the browser.  A newer navigation or stopped Surface retires a pending
+resolution.
+
+CW hides the guarded body until explicitly revealed.  Hidden bodies do
+not expose navigation links or sensitive media.  In graphical views,
+text renders first; avatars and image/video thumbnails load
+asynchronously through a bounded account queue.  Audio, PDF, archives,
+and other attachments remain actionable through their original HTTPS
+resource.
+
+Media caches are isolated by server and account.  Opening a different
+attachment or stopping its initiating Surface cancels a pending open.
+Failures appear in that Surface's header rather than opening another
+viewer's content.
+
+** Notifications and actions
+
+Opening, refreshing, and paging notifications always sends
+~markAsRead: false~.  Displaying a notification is not acknowledgement.
+~M~ in the notification view or its menu explicitly marks all read;
+~RET~ opens the referenced Note or actor.
+
+The ~a~ prefix provides contextual actions:
+
+| Key after ~a~ | Action |
+|---------------+--------|
+| ~r~ / ~R~ | Add a reaction string / remove your reaction |
+| ~f~ / ~F~ | Favorite / unfavorite |
+| ~n~ | Pure renote |
+| ~d~ | Confirm deletion of the exact row |
+| ~+~ / ~-~ | Follow / unfollow the user |
+
+A favorite is a private saved reference, distinct from a reaction.
+Confirmed actions update account-scoped state across matching live views.
+
+** Browsing keys
+
+The ordinary bindings and Evil's normal/motion bindings differ where a
+plain key would replace an established Evil motion:
+
+| Action | Ordinary | Evil |
+|--------+----------+------|
+| Context menu | ~?~ | ~?~ |
+| Refresh | ~g~ | ~g r~ |
+| Next / previous entry | ~n~ / ~p~ | ~g j~ / ~g k~ |
+| Older page | ~N~ | ~g n~ |
+| Link or CW; directory activation | ~RET~ | ~RET~ |
+| Cycle timeline/profile/directory | ~TAB~ | ~TAB~ |
+| Compose | ~c~ in timeline | ~c~ |
+| Reply / quote | ~r~ / ~q~ | ~r~ / ~Q~ |
+| Open Note thread | ~t~ | ~? T~ |
+| Browser | ~B~ | ~g o~ |
+| Open a supplied Note/profile URL | ~O~ | ~g O~ |
+| Copy link or Note URL | ~w~ | ~g y~ |
+| Contextual actions | ~a~ | ~a~ |
+| Acknowledge all notifications | ~M~ in notifications | ~M~ in notifications |
+
+Mouse-2 activates text links.  Browser, URL, and copy commands are also
+available as ~misskey-navigation-browse~,
+~misskey-navigation-open-note-url~, and ~misskey-navigation-copy-link~.
+
+Evil ~q~ closes the window without discarding its buffer.  Merely hiding
+a window is different from killing its buffer or stopping its Surface.
+
+* Writing Notes
+
+** Drafts and controls
+
+Run ~M-x misskey-compose~, or reply/quote from a Note.  The input contains
+your text, target context, and attachments, not a command legend.
+Visibility and character counts remain visible; CW, local-only,
+operation status, and limit errors appear when relevant.
+
+~C-c C-o~ or ~M-x misskey-compose-menu~ opens draft options.  The menu reads
+and changes the existing draft, retains the original buffer context, and
+updates its labels and available actions after edits.  Changing an option
+does not publish; only the explicit ~C-c C-c~ action does.
+
+| Key | Action |
+|-----+--------|
+| ~C-c C-o~ | Draft options |
+| ~C-c C-c~ | Publish once |
+| ~C-c C-v~ | Select visibility |
+| ~C-c C-w~ | Edit CW; empty input clears it |
+| ~C-c C-l~ | Toggle local-only publication |
+| ~C-c C-r~ / ~C-c C-x~ | Add / remove a specified recipient |
+| ~C-c C-a~ / ~C-c C-d~ | Attach / detach a local file |
+| ~C-c C-n~ / ~C-c C-p~ | Add / remove an extra Note |
+| ~C-c C-m~ | Reload the instance text limit |
+| ~C-c C-k~ | Discard an idle draft |
+
+** Visibility and targets
+
+Public, Home, Followers, and Specified are supported.  Home is publicly
+visible but excluded from public timelines; it is not a private audience.
+Specified limits recipients, but is not encrypted messaging.  Add recipients
+by ~@user[@host]~ or stable User ID; publication uses resolved IDs.
+Local-only controls federation separately from visibility.
+
+Replies inherit the target's visibility, CW, and local-only restriction.
+Their visibility cannot be widened beyond the target, nor can a required
+local-only restriction be disabled.  Specified replies retain the original
+recipients and author, excluding the sender.
+
+The composer refuses quotes of Specified Notes, another author's
+followers-only Notes, and channel Notes.  Programmatic reply/quote creation
+must supply the original Note metadata, not only its ID.
+
+** Parts, attachments, and publication
+
+A draft may contain several ordered Notes.  Visibility, CW, local-only,
+and recipients apply to every part and are captured when publication
+starts.  Each Note accepts at most 16 attachments; file-only Notes work.
+Local files stream to Drive without being loaded into Emacs as upload
+payloads.  The status shows the current upload's progress.
+
+The header counts Unicode code points for each part against the instance's
+~maxNoteTextLength~.  All parts and attachments are validated before any
+upload or publication.  An unavailable limit blocks publication rather
+than guessing a value; ~C-c C-m~ retries discovery without altering text.
+
+Notes publish in order; each later Note replies to the preceding confirmed
+one.  Successful Drive IDs remain on draft attachments, and confirmed
+prefix Notes are removed from the remaining work.  A deliberate retry
+reuses those files and does not recreate the confirmed prefix.
+
+* Failure and recovery
+
+Authenticated JSON requests and Drive uploads use bounded curl dispatches.
+Redirects and automatic retries are disabled; tokens stay out of request
+bodies and process arguments.  Requests belong to the initiating account
+or Surface.
+
+Once a write is dispatched, a failure is treated as an unknown remote
+outcome: the server may have applied it.  Inspect the server before
+retrying.  This differs from local validation failure, which occurs before
+any upload or post.
+
+Publication locks the draft while its operation is active.  Failure or
+Surface/account teardown retires local work and leaves the retained draft
+editable.  Late results cannot resume its chain.  Retention is in memory,
+not server-side draft storage or restart recovery; explicitly discarding
+a draft still removes it.
+
+Refreshing metadata or resolving recipients must not overwrite newer
+choices or revive a stopped operation.  Progress from an already completed
+upload cannot replace the next request's status.
+
+* Configuration
+
+Disable graphical previews or avatars independently:
+
+#+begin_src emacs-lisp
+(setq misskey-timeline-show-avatars nil
+      misskey-timeline-show-media nil)
+#+end_src
+
+~misskey-timeline-media-preview-width~ and
+~misskey-timeline-media-preview-height~ bound preview sizes.
+
+Evil support is local to Misskey maps and works with either load order.
+Compose starts in insert state; normal-state ~i~ returns to editable input,
+and ~C-c~ controls remain available.  Normal search and word motions such
+as ~n~, ~w~, and ~B~ are not replaced.  To opt out, set
+~appkit-evil-enable-integration~ to nil before loading Misskey.
+~M-x misskey-evil-setup~ reapplies integration after local map changes.
+
+The browsing and Compose Transient prefixes autoload on first use; the
+client entry point does not eagerly load their menu definitions.
+
+* Implementation boundaries
+
+Account identity and confirmed resource state belong to the App.  A
+Surface owns its view state, requests, and presentation lifetime.  UI
+projections are derived from those models rather than a second source of
+truth for Notes or credentials.
+
+Compose separates editable content from generated context.  Its source is
+organized into presentation, draft commands, owned metadata reads,
+publication snapshots, and request lifecycle handling.  Content edits use
+Appkit's compose APIs; header-only changes do not rebuild the input body.
+Success, failure, and progress share the same per-request lifetime check.
+
+CW is a domain visibility decision, not merely visual folding of text
+that has already been inserted.  Section identity, when used for a
+hierarchical read-only view, must be based on stable domain IDs rather
+than copied display text or large mutable response objects.

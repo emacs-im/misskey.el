@@ -55,7 +55,8 @@
   (misskey-auth--ensure-token)
   (misskey-thread-open note-id))
 
-(require 'misskey-menu)
+(autoload 'misskey-menu "misskey-menu" nil t)
+(autoload 'misskey-compose-menu "misskey-menu" nil t)
 (require 'misskey-evil)
 
 (provide 'misskey)
