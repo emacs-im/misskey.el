@@ -113,7 +113,7 @@ replaces the default empty result text."
    (if (plist-get state :older-exhausted-p)
        "older exhausted"
      "N older")
-   "   RET reveal CW   t thread   r reply   q quote\n"))
+   "   ? menu   RET link/CW   O open URL   B browser   w copy link   t thread   r reply   q quote\n"))
 
 (defun misskey-feed--generated-text (state key fallback)
   "Return STATE's generated text at KEY, or call FALLBACK."

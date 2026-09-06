@@ -609,10 +609,10 @@ Missing wire keys do not alter state; an explicitly present nil value does."
              (cons (misskey-timeline--frame state)
                    (concat "\ng refresh   TAB next timeline   n/p note   "
                            (if (plist-get state :older-exhausted-p) "older exhausted" "N older")
-                           "   RET reveal CW   c compose\n")))
+                           "   ? menu   RET link/CW   O open URL   B browser   w copy link   c compose\n")))
             ('thread
              (cons (misskey-thread--frame state)
-                   (concat "\ng refresh   n/p note   RET reveal CW"
+                   (concat "\ng refresh   n/p note   ? menu   RET link/CW   O open URL   B browser   w copy link"
                            (if (plist-get state :replies-exhausted-p) "   replies exhausted\n" "   N more replies\n"))))
             (_ (cons (misskey-feed--generated-text state :header-function #'misskey-feed-default-header)
                      (misskey-feed--generated-text state :footer-function #'misskey-feed-default-footer)))))

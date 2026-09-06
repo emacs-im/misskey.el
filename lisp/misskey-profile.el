@@ -45,21 +45,20 @@
 (defconst misskey-profile--request-key 'profile-user
   "Operation key for the active profile lookup.")
 
+(declare-function misskey-menu "misskey-menu" nil)
+
 (defvar-keymap misskey-profile-mode-map
-  :doc "Keymap for `misskey-profile-mode'."
-  :parent special-mode-map
-  "TAB" #'misskey-profile-next-mode
-  "g" #'misskey-profile-refresh
-  "N" #'misskey-profile-load-more
-  "n" #'appkit-discussion-next-entry
-  "p" #'appkit-discussion-previous-entry
-  "RET" #'misskey-render-toggle-content-warning
-  "t" #'misskey-thread-at-point
-  "a" misskey-actions-map
-  "r" #'misskey-compose-reply-at-point
-  "q" #'misskey-compose-quote-at-point
-  "f" #'misskey-profile-followers
-  "F" #'misskey-profile-following)
+  :doc "Keymap for `misskey-profile-mode'." :parent special-mode-map
+  "TAB" #'misskey-profile-next-mode "g" #'misskey-profile-refresh "N"
+  #'misskey-profile-load-more "n" #'appkit-discussion-next-entry "p"
+  #'appkit-discussion-previous-entry "RET"
+  #'misskey-navigation-activate "<mouse-2>"
+  #'misskey-navigation-mouse-activate "O"
+  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link "t" #'misskey-thread-at-point "a"
+  misskey-actions-map "r" #'misskey-compose-reply-at-point "q"
+  #'misskey-compose-quote-at-point "f" #'misskey-profile-followers "F"
+  #'misskey-profile-following "?" #'misskey-menu)
 
 (define-derived-mode misskey-profile-mode special-mode "Misskey-Profile"
   "Major mode for one Misskey user profile."

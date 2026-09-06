@@ -10,9 +10,9 @@ attachments, and contextual note and user actions.
 
 * Install
 
-Emacs 29.1, Appkit 0.2.16, Plz 0.9.1, ~curl~, and ~uuidgen~ are
-required.  Put this repository's ~lisp/~ directory, Appkit, and Plz on
-~load-path~, then:
+Emacs 32.0, Appkit 0.3.0, Plz 0.9.1, Transient 0.13.7, ~curl~, and
+~uuidgen~ are required.  Evil integration is optional.  Put this
+repository's ~lisp/~ directory and its dependencies on ~load-path~, then:
 
 #+begin_src emacs-lisp
 (require 'misskey)

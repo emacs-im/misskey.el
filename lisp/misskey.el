@@ -5,7 +5,7 @@
 
 ;; Author: 0WD0
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (appkit "0.2.16") (plz "0.9.1"))
+;; Package-Requires: ((emacs "32.0") (appkit "0.3.0") (plz "0.9.1") (transient "0.13.7"))
 ;; Keywords: convenience, comm
 ;; URL: https://github.com/emacs-im/misskey.el
 
@@ -54,6 +54,9 @@
   (interactive "sMisskey note ID: ")
   (misskey-auth--ensure-token)
   (misskey-thread-open note-id))
+
+(require 'misskey-menu)
+(require 'misskey-evil)
 
 (provide 'misskey)
 

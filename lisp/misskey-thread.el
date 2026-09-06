@@ -32,17 +32,20 @@
 (defconst misskey-thread--request-key 'thread
   "Operation key for the active thread request.")
 
+(declare-function misskey-menu "misskey-menu" nil)
+
 (defvar-keymap misskey-thread-mode-map
-  :doc "Keymap for `misskey-thread-mode'."
-  :parent special-mode-map
-  "g" #'misskey-thread-refresh
-  "N" #'misskey-thread-load-more
-  "n" #'appkit-discussion-next-entry
-  "p" #'appkit-discussion-previous-entry
-  "RET" #'misskey-render-toggle-content-warning
-  "r" #'misskey-compose-reply-at-point
-  "q" #'misskey-compose-quote-at-point
-  "a" misskey-actions-map)
+  :doc "Keymap for `misskey-thread-mode'." :parent special-mode-map
+  "g" #'misskey-thread-refresh "N" #'misskey-thread-load-more "n"
+  #'appkit-discussion-next-entry "p"
+  #'appkit-discussion-previous-entry "RET"
+  #'misskey-navigation-activate "<mouse-2>"
+  #'misskey-navigation-mouse-activate "O"
+  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link "r"
+  #'misskey-compose-reply-at-point "q"
+  #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
+  #'misskey-menu)
 
 (define-derived-mode misskey-thread-mode special-mode "Misskey-Thread"
   "Major mode for one Misskey note thread."

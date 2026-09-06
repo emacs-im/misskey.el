@@ -18,6 +18,33 @@
 (require 'misskey-http)
 (require 'misskey-note)
 
+(defvar-local misskey-compose-cw nil
+  "Content warning shared by all parts, or nil.")
+
+(defvar-local misskey-compose-local-only nil
+  "Non-nil when all parts must stay on this instance.")
+
+(defvar-local misskey-compose-recipients nil
+  "Specified recipients as (stable ID . readable label) pairs.")
+
+(defvar-local misskey-compose--target-visibility nil
+  "Audience ceiling imposed by the original reply or quote.")
+
+(defvar-local misskey-compose--target-local-only nil
+  "Whether the target forces local-only publication.")
+
+(defvar-local misskey-compose--max-note-text-length nil
+  "Instance-provided Unicode code-point limit, or nil when unknown.")
+
+(defvar-local misskey-compose--meta-status "Not loaded; C-c C-m refresh"
+  "Visible state of the instance metadata read.")
+
+(defvar-local misskey-compose--recipient-status nil
+  "Visible state of a recipient lookup, or nil.")
+
+(defvar-local misskey-compose--reads nil
+  "Owned read slots, each (KIND REQUEST).")
+
 (defvar-local misskey-compose--account nil
   "Account captured when the current draft was opened.")
 
@@ -42,7 +69,8 @@
 (defconst misskey-compose--visibility-choices
   '((public . "Public")
     (home . "Home")
-    (followers . "Followers"))
+    (followers . "Followers")
+    (specified . "Specified"))
   "Supported Misskey visibility values and labels.")
 
 (defvar misskey-compose--serial 0
@@ -50,6 +78,8 @@
 
 (defconst misskey-compose--max-attachments 16
   "Maximum number of Drive files attached to one Misskey note.")
+
+(declare-function misskey-compose-menu "misskey-menu" nil)
 
 (defvar-keymap misskey-compose-mode-map
   :doc "Keymap for `misskey-compose-mode'."
@@ -59,7 +89,13 @@
   "C-c C-p" #'misskey-compose-remove-note
   "C-c C-v" #'misskey-compose-set-visibility
   "C-c C-a" #'misskey-compose-attach-file
-  "C-c C-d" #'misskey-compose-remove-attachment)
+  "C-c C-d" #'misskey-compose-remove-attachment
+  "C-c C-w" #'misskey-compose-set-cw
+  "C-c C-l" #'misskey-compose-toggle-local-only
+  "C-c C-r" #'misskey-compose-add-recipient
+  "C-c C-x" #'misskey-compose-remove-recipient
+  "C-c C-m" #'misskey-compose-refresh-metadata
+  "C-c C-o" #'misskey-compose-menu)
 
 (define-derived-mode misskey-compose-mode appkit-chat-compose-mode "Misskey-Compose"
   "Major mode for composing a standalone Misskey note."
@@ -105,8 +141,32 @@
                  (or (alist-get misskey-compose-visibility
                                 misskey-compose--visibility-choices)
                      (format "%s" misskey-compose-visibility)))
+           (list :label "Characters"
+                 :value (mapconcat
+                         (lambda (item)
+                           (format "%d/%s%s" (length (or (plist-get item :text) ""))
+                                   (or misskey-compose--max-note-text-length "?")
+                                   (if (and misskey-compose--max-note-text-length
+                                            (> (length (or (plist-get item :text) ""))
+                                               misskey-compose--max-note-text-length))
+                                       " OVER" "")))
+                         items " | "))
+           (list :label "Limit" :value misskey-compose--meta-status)
+           (list :label "CW" :value (or misskey-compose-cw "None"))
+           (list :label "Federation"
+                 :value (if misskey-compose-local-only "Local only" "Enabled"))
            (list :label "State"
                  :value (or (appkit-compose-status-text) "Draft")))))
+    (when (eq misskey-compose-visibility 'specified)
+      (push (list :label "Recipients"
+                  :value (if misskey-compose-recipients
+                             (mapconcat (lambda (entry)
+                                          (format "%s [%s]" (cdr entry) (car entry)))
+                                        misskey-compose-recipients ", ")
+                           "None; C-c C-r add"))
+            fields))
+    (when misskey-compose--recipient-status
+      (push (list :label "Recipient lookup" :value misskey-compose--recipient-status) fields))
     (when (> (length items) 1)
       (push (list :label "Notes" :value (format "%d" (length items)))
             fields))
@@ -148,8 +208,10 @@
   (propertize
    (if (appkit-compose-operation-active-p)
        "Publishing; wait for the server response"
-     (concat "C-c C-c publish   C-c C-v visibility   "
+     (concat "C-c C-o options   C-c C-c publish   C-c C-v visibility   "
              "C-c C-a attach   C-c C-d detach\n"
+             "C-c C-w CW/clear   C-c C-l local only   C-c C-m refresh limit\n"
+             "C-c C-r add recipient   C-c C-x remove recipient\n"
              "C-c C-n add note   C-c C-p drop note   C-c C-k cancel"))
    'face 'shadow))
 
@@ -158,35 +220,83 @@
   (appkit-chat-compose-refresh))
 
 (cl-defun misskey-compose-open
-    (&optional account &key reply-id renote-id target-label
-               (visibility 'public))
+    (&optional account &key reply-id renote-id target-label target-note
+               (visibility 'public) (cw nil cw-p) local-only recipients)
   "Create, display, and return a fresh compose buffer for ACCOUNT.
-
-REPLY-ID or RENOTE-ID sets the first note's target; they are mutually
-exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
-`home', or `followers'.  ACCOUNT defaults to current customization."
+REPLY-ID or RENOTE-ID sets the first target; they are mutually exclusive.
+TARGET-NOTE is required for replies/quotes and supplies the original payload
+for privacy-safe audience, CW,
+local-only and specified-recipient defaults.  TARGET-LABEL describes it.
+VISIBILITY is public, home, followers or specified.  CW, LOCAL-ONLY and
+RECIPIENTS (ID . label pairs) apply to every part.  Instance limits are
+loaded asynchronously; publishing is blocked until a valid limit arrives."
   (when (and reply-id renote-id)
     (error "A Misskey draft cannot reply and quote simultaneously"))
+  (when (and (or reply-id renote-id) (null target-note))
+    (user-error "Original note metadata is required to compose a safe reply or quote"))
   (unless (assq visibility misskey-compose--visibility-choices)
     (error "Unsupported Misskey visibility: %S" visibility))
-  (let* ((target (or account (misskey--current-account)))
-         (buffer (generate-new-buffer
-                  (format "*misskey compose %d*"
-                          (cl-incf misskey-compose--serial)))))
-    (pop-to-buffer buffer)
-    (misskey-compose-mode)
-    (setq-local misskey-compose--account target)
-    (setq-local misskey-compose-visibility visibility)
-    (setq-local misskey-compose-reply-id reply-id)
-    (setq-local misskey-compose-renote-id renote-id)
-    (setq-local misskey-compose-target-label target-label)
-    (appkit-chat-compose-setup
-     :app (misskey-app target)
-     :context-function #'misskey-compose--context
-     :status-fields-function #'misskey-compose--status-fields
-     :parts-function #'misskey-compose--parts
-     :footer-function #'misskey-compose--footer)
-    buffer))
+  (let* ((app (misskey-app account))
+         (target (misskey--session-account (misskey--session app)))
+         (self (misskey--account-remote-user-id target))
+         (author (and target-note (misskey-user-id (misskey-note-user target-note))))
+         (audience (and target-note
+                        (let ((value (alist-get 'visibility target-note)))
+                          (and (stringp value) (intern value)))))
+         (target-local (and target-note (eq (alist-get 'localOnly target-note) t))))
+    (when target-note
+      (unless (and (equal (misskey-note-id target-note) (or reply-id renote-id))
+                   (assq audience misskey-compose--visibility-choices))
+        (user-error "Invalid compose target metadata"))
+      (when (and renote-id
+                 (or (eq audience 'specified)
+                     (and (eq audience 'followers) (not (equal author self)))
+                     (alist-get 'channelId target-note)))
+        (user-error "Cannot quote specified, another user's followers-only, or channel notes"))
+      (let ((order '(public home followers specified)))
+        (when (> (length (memq visibility order)) (length (memq audience order)))
+          (setq visibility audience)))
+      (setq local-only (or local-only target-local))
+      (unless cw-p
+        (setq cw (let ((warning (alist-get 'cw target-note)))
+                   (and (stringp warning) (not (string-empty-p warning)) warning))))
+      (when (and reply-id (eq audience 'specified))
+        (let ((ids (alist-get 'visibleUserIds target-note)))
+          (unless (and (assq 'visibleUserIds target-note)
+                       (or (listp ids) (vectorp ids))
+                       (misskey--valid-user-id-p self)
+                       (misskey--valid-user-id-p author)
+                       (cl-every #'misskey--valid-user-id-p ids))
+            (user-error "Reply audience is incomplete; reload the original note"))
+          (setq recipients
+                (mapcar (lambda (id)
+                          (cons id (if (equal id author)
+                                       (misskey-user-label (misskey-note-user target-note))
+                                     id)))
+                        (delete-dups
+                         (cl-remove self (append ids (list author)) :test #'equal)))))))
+    (let ((buffer (generate-new-buffer
+                   (format "*misskey compose %d*" (cl-incf misskey-compose--serial)))))
+      (pop-to-buffer buffer)
+      (misskey-compose-mode)
+      (setq-local misskey-compose--account target
+                  misskey-compose-visibility visibility
+                  misskey-compose-cw (and cw (copy-sequence cw))
+                  misskey-compose-local-only local-only
+                  misskey-compose-recipients (copy-tree recipients)
+                  misskey-compose--target-visibility audience
+                  misskey-compose--target-local-only target-local
+                  misskey-compose-reply-id reply-id
+                  misskey-compose-renote-id renote-id
+                  misskey-compose-target-label target-label)
+      (appkit-chat-compose-setup
+       :app app
+       :context-function #'misskey-compose--context
+       :status-fields-function #'misskey-compose--status-fields
+       :parts-function #'misskey-compose--parts
+       :footer-function #'misskey-compose--footer)
+      (misskey-compose-refresh-metadata)
+      buffer)))
 
 (defun misskey-compose--copy-item (item)
   "Return a draft copy of compose ITEM with independent attachments."
@@ -197,11 +307,16 @@ exclusive.  TARGET-LABEL describes that target.  VISIBILITY is `public',
 
 (defun misskey-compose--snapshot-items ()
   "Return validated independent copies of every compose item."
+  (misskey-compose--validate-metadata)
   (mapcar
    (lambda (item)
      (let* ((copy (misskey-compose--copy-item item))
             (text (or (plist-get copy :text) ""))
             (attachments (plist-get copy :attachments)))
+       ;; JSON Schema maxLength counts Unicode code points, not UTF-16 units.
+       (when (> (length text) misskey-compose--max-note-text-length)
+         (user-error "Note exceeds instance limit: %d/%d Unicode characters"
+                     (length text) misskey-compose--max-note-text-length))
        (when (> (length attachments) misskey-compose--max-attachments)
          (user-error "A Misskey note accepts at most %d attachments"
                      misskey-compose--max-attachments))
@@ -373,6 +488,8 @@ Unlike result callbacks, teardown remains valid after the Surface is revoked."
 
 (defun misskey-compose--kill-buffer-cleanup ()
   "Invalidate and cancel this draft's active publish chain."
+  (dolist (kind (mapcar #'car misskey-compose--reads))
+    (misskey-compose--cancel-read kind))
   (when misskey-compose--submission-token
     (let ((request misskey-compose--request))
       (setq-local misskey-compose--submission-token nil
@@ -463,6 +580,14 @@ Unlike result callbacks, teardown remains valid after the Surface is revoked."
          (parameters
           (list :visibility
                 (symbol-name (plist-get submission :visibility)))))
+    (when (plist-get submission :cw)
+      (setq parameters (append parameters (list :cw (plist-get submission :cw)))))
+    (when (plist-get submission :local-only)
+      (setq parameters (append parameters (list :localOnly t))))
+    (when (eq (plist-get submission :visibility) 'specified)
+      (setq parameters
+            (append parameters
+                    (list :visibleUserIds (plist-get submission :visible-user-ids)))))
     (when (string-match-p "[^[:space:]]" text)
       (setq parameters (append (list :text text) parameters)))
     (when (> (length file-ids) 0)
@@ -580,11 +705,14 @@ BUFFER's NOTE-INDEX selects the draft entry."
 (defun misskey-compose-set-visibility (&optional visibility)
   "Set the current draft VISIBILITY.
 
-Interactively, choose `public', `home', or `followers'."
+Interactively, choose Public, Home, Followers, or Specified within the
+target audience."
   (interactive)
   (when (appkit-compose-operation-active-p)
     (user-error "Wait for the current publish request to finish"))
-  (let* ((choices misskey-compose--visibility-choices)
+  (let* ((choices (cl-remove-if-not
+                   (lambda (entry) (misskey-compose--audience-allowed-p (car entry)))
+                   misskey-compose--visibility-choices))
          (label
           (and (null visibility)
                (completing-read
@@ -594,7 +722,9 @@ Interactively, choose `public', `home', or `followers'."
     (unless (assq choice choices)
       (user-error "Unsupported Misskey visibility: %S" choice))
     (unless (eq misskey-compose-visibility choice)
-      (setq-local misskey-compose-visibility choice)
+      (misskey-compose--cancel-read 'recipient)
+      (setq-local misskey-compose--recipient-status nil
+                  misskey-compose-visibility choice)
       (appkit-compose-touch)
       (misskey-compose--refresh))
     choice))
@@ -650,6 +780,13 @@ reuse Drive files and never recreate confirmed notes."
                                     (list :items items :index 0
                                           :previous-id nil :visibility
                                           misskey-compose-visibility
+                                          :cw (and misskey-compose-cw
+                                                   (copy-sequence misskey-compose-cw))
+                                          :local-only misskey-compose-local-only
+                                          :visible-user-ids
+                                          (vconcat (mapcar (lambda (entry)
+                                                             (copy-sequence (car entry)))
+                                                           misskey-compose-recipients))
                                           :reply-id
                                           misskey-compose-reply-id
                                           :renote-id
@@ -677,6 +814,7 @@ reuse Drive files and never recreate confirmed notes."
     (unless note
       (user-error "The displayed Misskey note was deleted"))
     (misskey-compose-open account target-key (misskey-note-id note)
+                          :target-note note
                           :target-label
                           (misskey-user-label (misskey-note-user note)))))
 
@@ -696,6 +834,185 @@ reuse Drive files and never recreate confirmed notes."
   (when (appkit-compose-operation-active-p)
     (appkit-compose-cancel-operation))
   (kill-buffer (current-buffer)))
+
+(defun misskey-compose--cancel-read (kind)
+  "Invalidate and cancel the owned read of KIND."
+  (when-let* ((slot (assq kind misskey-compose--reads)))
+    (setq misskey-compose--reads (delq slot misskey-compose--reads))
+    (when (cadr slot) (misskey-http-cancel (cadr slot)))))
+
+(defun misskey-compose--read (kind endpoint parameters callback errback)
+  "Start a replaceable KIND read of ENDPOINT with PARAMETERS.
+Deliver CALLBACK or ERRBACK only to this exact live draft and account."
+  (misskey-compose--cancel-read kind)
+  (let* ((buffer (current-buffer))
+         (owner (appkit-current-surface))
+         (account (misskey-compose--account))
+         (slot (list kind nil))
+         (completed nil))
+    (unless (appkit-surface-live-p owner)
+      (user-error "Misskey compose has no live lifecycle owner"))
+    (push slot misskey-compose--reads)
+    (cl-flet
+        ((deliver (function value)
+           (setq completed t)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (when (and (eq slot (assq kind misskey-compose--reads))
+                          (eq account misskey-compose--account)
+                          (appkit-surface-live-p owner)
+                          (eq owner (appkit-current-surface)))
+                 (setq misskey-compose--reads
+                       (delq slot misskey-compose--reads))
+                 (funcall function value))))))
+      (condition-case err
+          (let ((request
+                  (misskey-http-read
+                   endpoint parameters
+                   (lambda (payload) (deliver callback payload))
+                   :errback (lambda (failure) (deliver errback failure))
+                   :owner owner :account account)))
+            (unless completed (setf (cadr slot) request)))
+        (error (deliver errback (error-message-string err)))))))
+
+(defun misskey-compose-refresh-metadata ()
+  "Reload this draft's instance text limit; never guess a fallback limit."
+  (interactive)
+  (when (appkit-compose-operation-active-p)
+    (user-error "Wait for the current publish request to finish"))
+  (setq misskey-compose--max-note-text-length nil
+        misskey-compose--meta-status "Loading")
+  (misskey-compose--refresh)
+  (misskey-compose--read
+   'meta "meta" '(:detail :json-false)
+   (lambda (payload)
+     (let ((limit (and (listp payload) (alist-get 'maxNoteTextLength payload))))
+       (if (and (integerp limit) (> limit 0))
+           (setq misskey-compose--max-note-text-length limit
+                 misskey-compose--meta-status "Ready")
+         (setq misskey-compose--meta-status
+               "Invalid instance limit; C-c C-m retry")))
+     (misskey-compose--refresh))
+   (lambda (failure)
+     (setq misskey-compose--meta-status (format "%s; C-c C-m retry" failure))
+     (misskey-compose--refresh))))
+
+(defun misskey-compose--audience-allowed-p (visibility)
+  "Whether VISIBILITY respects the target's audience ceiling."
+  (let ((order '(public home followers specified)))
+    (and (memq visibility order)
+         (or (null misskey-compose--target-visibility)
+             (<= (length (memq visibility order))
+                 (length (memq misskey-compose--target-visibility order)))))))
+
+(defun misskey-compose-set-cw (warning)
+  "Set the draft's content WARNING; an empty string clears it."
+  (interactive (list (read-string "Content warning (empty clears): "
+                                  misskey-compose-cw)))
+  (when (appkit-compose-operation-active-p)
+    (user-error "Wait for the current publish request to finish"))
+  (unless (and (stringp warning) (<= (length warning) 100))
+    (user-error "A content warning accepts at most 100 Unicode characters"))
+  (let ((value (unless (string-empty-p warning) warning)))
+    (unless (equal value misskey-compose-cw)
+      (setq misskey-compose-cw value)
+      (appkit-compose-touch)
+      (misskey-compose--refresh))))
+
+(defun misskey-compose-toggle-local-only ()
+  "Toggle instance-only publication, unless the target requires it."
+  (interactive)
+  (when (appkit-compose-operation-active-p)
+    (user-error "Wait for the current publish request to finish"))
+  (when misskey-compose--target-local-only
+    (user-error "This target requires local-only publication"))
+  (setq misskey-compose-local-only (not misskey-compose-local-only))
+  (appkit-compose-touch)
+  (misskey-compose--refresh))
+
+(defun misskey-compose-add-recipient (handle)
+  "Resolve and add HANDLE, an @user[@host] or stable local user ID.
+A later recipient or audience edit supersedes an unfinished lookup."
+  (interactive "sRecipient (@user[@host] or user ID): ")
+  (when (appkit-compose-operation-active-p)
+    (user-error "Wait for the current publish request to finish"))
+  (unless (eq misskey-compose-visibility 'specified)
+    (user-error "Choose Specified visibility before adding recipients"))
+  (let ((parameters
+         (cond
+          ((string-match "\\`@\\([^@[:space:]]+\\)\\(?:@\\([^@[:space:]]+\\)\\)?\\'" handle)
+           (append (list :username (match-string 1 handle))
+                   (when (match-string 2 handle)
+                     (list :host (match-string 2 handle)))))
+          ((misskey--valid-user-id-p handle) (list :userId handle))
+          (t (user-error "Use @user, @user@host, or a stable user ID")))))
+    (setq misskey-compose--recipient-status (format "Resolving %s" handle))
+    (misskey-compose--refresh)
+    (misskey-compose--read
+     'recipient "users/show" parameters
+     (lambda (user)
+       (let ((id (and (listp user) (misskey-user-id user))))
+         (cond
+          ((not (misskey--valid-user-id-p id))
+           (setq misskey-compose--recipient-status "Invalid user response; C-c C-r retry"))
+          ((equal id (misskey--account-remote-user-id (misskey-compose--account)))
+           (setq misskey-compose--recipient-status nil)
+           (message "You are already included as sender"))
+          (t
+           (setq misskey-compose--recipient-status nil)
+           (unless (assoc id misskey-compose-recipients)
+             (setq misskey-compose-recipients
+                   (append misskey-compose-recipients
+                           (list (cons id (misskey-user-label user)))))
+             (appkit-compose-touch)))))
+       (misskey-compose--refresh))
+     (lambda (failure)
+       (setq misskey-compose--recipient-status (format "%s; C-c C-r retry" failure))
+       (misskey-compose--refresh)))))
+
+(defun misskey-compose-remove-recipient (id)
+  "Remove specified recipient ID, choosing a labelled recipient interactively."
+  (interactive
+   (list (let* ((choices (mapcar (lambda (entry)
+                                   (cons (format "%s [%s]" (cdr entry) (car entry))
+                                         (car entry)))
+                                 misskey-compose-recipients))
+                (label (completing-read "Remove recipient: " choices nil t)))
+           (cdr (assoc label choices)))))
+  (when (appkit-compose-operation-active-p)
+    (user-error "Wait for the current publish request to finish"))
+  (unless (assoc id misskey-compose-recipients)
+    (user-error "No such recipient"))
+  (misskey-compose--cancel-read 'recipient)
+  (setq misskey-compose--recipient-status nil
+        misskey-compose-recipients (assoc-delete-all id misskey-compose-recipients))
+  (appkit-compose-touch)
+  (misskey-compose--refresh))
+
+(defun misskey-compose--validate-metadata ()
+  "Reject incomplete or invalid publication metadata before any write."
+  (unless (and (integerp misskey-compose--max-note-text-length)
+               (> misskey-compose--max-note-text-length 0))
+    (user-error "Instance text limit unavailable: %s" misskey-compose--meta-status))
+  (unless (misskey-compose--audience-allowed-p misskey-compose-visibility)
+    (user-error "Visibility would widen the target audience"))
+  (when (and misskey-compose--target-local-only (not misskey-compose-local-only))
+    (user-error "This target requires local-only publication"))
+  (unless (or (null misskey-compose-cw)
+              (and (stringp misskey-compose-cw)
+                   (<= 1 (length misskey-compose-cw) 100)))
+    (user-error "Content warning must contain 1 to 100 Unicode characters"))
+  (when (eq misskey-compose-visibility 'specified)
+    (when misskey-compose--recipient-status
+      (user-error "Resolve recipient state first: %s" misskey-compose--recipient-status))
+    (unless (and (consp misskey-compose-recipients)
+                 (cl-every (lambda (entry)
+                             (and (consp entry)
+                                  (misskey--valid-user-id-p (car entry))))
+                           misskey-compose-recipients)
+                 (= (length misskey-compose-recipients)
+                    (length (delete-dups (mapcar #'car misskey-compose-recipients)))))
+      (user-error "Specified visibility requires valid, unique recipient IDs"))))
 
 (provide 'misskey-compose)
 

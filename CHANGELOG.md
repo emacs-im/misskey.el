@@ -18,6 +18,9 @@
 - Added authenticated JSON and streaming multipart curl transports with redirects and retries disabled, raw response and diagnostic byte caps, strict bearer validation, Appkit-owned cancellation, token redaction, and unknown-outcome reporting for every post-dispatch write failure.
 - Added Drive upload progress on the compose submit status strip, measured from curl's upload meter without loading the file into Emacs.
 - Timeline refresh, pagination, kind selection, and content-warning changes now commit through Surface domain messages. The App retains settled page snapshots rather than sharing mutable view state; account state merges commit before exact replies install fetched notes.
+- Added native navigation for Note links, federation-aware mentions, and exact hashtags, with browser/copy actions, literal-code exclusions, and view-owned remote URL resolution.
+- Added compose CW, local-only and specified-recipient controls, live instance-provided character limits, and all-parts validation before uploads or publication.
+- Added context-sensitive Transient menus for browsing and live draft controls, plus optional Appkit-backed Evil integration with local normal/motion bindings and insert-state composition.
 
 ### Fixed
 
@@ -30,6 +33,7 @@
 - Preview demands now share a bounded account queue, so large cold-cache pages do not exhaust the App's active Effect limit. Completed or failed previews release capacity for waiting resources.
 - Stopping a publishing Compose Surface retires its operation and leaves the retained draft editable; cancellation-time and late results cannot resume the reply chain.
 - Changing draft visibility advances its semantic generation exactly once; setting the same visibility leaves the draft unchanged.
+- Reply and quote composition now requires original target metadata and preserves its audience restrictions instead of defaulting private replies to Public. Publication snapshots retain content controls across multi-note retries.
 
 ### Changed
 

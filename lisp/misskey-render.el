@@ -22,6 +22,7 @@
 (require 'misskey-core)
 (require 'misskey-media)
 (require 'misskey-note)
+(require 'misskey-navigation)
 
 (defun misskey-render-width ()
   "Return the current Misskey view render width in columns."
@@ -140,7 +141,7 @@
          prefix "[RET to reveal]" :face 'shadow :properties properties)
       (appkit-ui-insert-prefixed-lines
        prefix
-       (if (and (stringp text) (not (string-empty-p text))) text "(no text)")
+       (if (and (stringp text) (not (string-empty-p text))) (misskey-navigation-propertize text note) "(no text)")
        :properties properties))))
 
 (defun misskey-render--insert-body

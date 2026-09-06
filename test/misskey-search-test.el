@@ -80,6 +80,33 @@
   (misskey-test-with-session
     (should-error (misskey-search "  ") :type 'user-error)))
 
+(ert-deftest misskey-search-hashtag-endpoint-and-independent-pagination ()
+  (misskey-test-with-session
+    (let ((account (misskey--current-account)) requests tag text)
+      (unwind-protect
+          (cl-letf (((symbol-function 'message) #'ignore)
+                    ((symbol-function 'misskey-http-read)
+                     (lambda (endpoint parameters callback &rest _options)
+                       (push (cons endpoint parameters) requests)
+                       (let ((id (if (equal endpoint "notes/search-by-tag")
+                                     (if (plist-get parameters :untilId) "tag-older" "tag-first")
+                                   "text-first")))
+                         (funcall callback (list (misskey-search-test--note id "#猫")))))))
+            (setq tag (misskey-search-tag "猫" account)
+                  text (misskey-search "猫" account))
+            (misskey-test-drain tag)
+            (with-current-buffer (appkit-surface-buffer tag) (misskey-search-load-more))
+            (misskey-test-drain tag)
+            (should (equal (misskey-test-visible-note-keys tag) '("tag-first" "tag-older")))
+            (should (equal (misskey-test-visible-note-keys text) '("text-first")))
+            (let ((older (cl-find-if (lambda (request) (plist-get (cdr request) :untilId)) requests)))
+              (should (equal (car older) "notes/search-by-tag"))
+              (should (equal (plist-get (cdr older) :tag) "猫"))
+              (should (equal (plist-get (cdr older) :untilId) "tag-first"))
+              (should-not (plist-member (cdr older) :query))))
+        (dolist (view (list tag text))
+          (when (appkit-surface-p view) (kill-buffer (appkit-surface-buffer view))))))))
+
 (provide 'misskey-search-test)
 
 ;;; misskey-search-test.el ends here

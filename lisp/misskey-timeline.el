@@ -42,20 +42,21 @@
 (defconst misskey-timeline--request-key 'timeline
   "Effect key for the active timeline page.")
 
+(declare-function misskey-menu "misskey-menu" nil)
+
 (defvar-keymap misskey-timeline-mode-map
-  :doc "Keymap for `misskey-timeline-mode'."
-  :parent special-mode-map
-  "TAB" #'misskey-timeline-next-kind
-  "g" #'misskey-timeline-refresh
-  "n" #'appkit-discussion-next-entry
-  "p" #'appkit-discussion-previous-entry
-  "RET" #'misskey-render-toggle-content-warning
-  "N" #'misskey-timeline-load-more
-  "c" #'misskey-timeline-compose
-  "t" #'misskey-thread-at-point
-  "r" #'misskey-compose-reply-at-point
-  "q" #'misskey-compose-quote-at-point
-  "a" misskey-actions-map)
+  :doc "Keymap for `misskey-timeline-mode'." :parent special-mode-map
+  "TAB" #'misskey-timeline-next-kind "g" #'misskey-timeline-refresh
+  "n" #'appkit-discussion-next-entry "p"
+  #'appkit-discussion-previous-entry "RET"
+  #'misskey-navigation-activate "<mouse-2>"
+  #'misskey-navigation-mouse-activate "O"
+  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link "N" #'misskey-timeline-load-more
+  "c" #'misskey-timeline-compose "t" #'misskey-thread-at-point "r"
+  #'misskey-compose-reply-at-point "q"
+  #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
+  #'misskey-menu)
 
 (define-derived-mode misskey-timeline-mode special-mode "Misskey-Timeline"
   "Major mode for authenticated Misskey timelines."
@@ -387,7 +388,7 @@
 (defun misskey-timeline-update (context model message)
   "Reduce timeline MESSAGE, fencing all page replies before dispatch."
   (if (and (memq (car-safe message) '(:timeline-observed :timeline-received
-                                                         :timeline-committed :timeline-failed))
+                                      :timeline-committed :timeline-failed))
            (not (equal (cadr message) (plist-get model :request-id))))
       (appkit-next-reject 'superseded-timeline-request)
     (pcase message

@@ -40,6 +40,7 @@ An instance on a non-default HTTPS port uses ~misskey-PORT~, such as
 | ~M-x misskey-thread~ | thread by note ID |
 | ~M-x misskey-profile-open~ | user by stable ID or ~@username[@host]~ |
 | ~M-x misskey-search~ | independently paged note search |
+| ~M-x misskey-search-tag~ | independently paged exact hashtag search |
 | ~M-x misskey-notifications~ | notifications, unread |
 | ~M-x misskey-compose~ | new compose draft |
 
@@ -50,10 +51,14 @@ An instance on a non-default HTTPS port uses ~misskey-PORT~, such as
 | ~g~ | refresh |
 | ~n~ / ~p~ | next or previous note |
 | ~N~ | older page, keep semantic position |
-| ~RET~ | reveal or hide a content-warning body |
+| ~RET~ / mouse-2 | activate a text link; otherwise reveal or hide a content-warning body |
 | ~t~ | open the thread at point |
 | ~r~ / ~q~ | compose a reply or quote |
 | ~a~ | prefix contextual note and user actions |
+| ~O~ | open a Note or profile URL from the current view |
+| ~B~ | open the link at point, or the current Note, in a browser |
+| ~w~ | copy that link or Note URL |
+| ~?~ | contextual Transient menu |
 
 Timeline ~TAB~ cycles Home, Local, Social, and Global in one view
 while retaining each mode's loaded notes and position.  Settled pages remain
@@ -62,6 +67,21 @@ selected mode without reviving its old request.  Profile ~TAB~
 cycles Notes, Notes + replies, and Media; ~f~ and ~F~ open followers
 and following directories.  Each ~misskey-search~ invocation owns an
 independent result set, cursor, request, and content-warning state.
+
+HTTP(S) links, mentions, and hashtags in ordinary and quoted Note text are
+actionable without changing copied text.  Code and ~<plain>~ content remain
+literal, and hidden CW bodies do not expose links.  A bare mention in a
+remote author's text resolves on that author's server; hashtags use
+~notes/search-by-tag~, not free-text search.
+
+Own-instance Note and profile URLs open existing client views.  Recognized
+remote object URLs resolve through the current account's instance; credentials
+are never sent to the linked host.  Other web links open in the browser.
+Resolution stops when its view closes or another navigation supersedes it.
+The URL prompt is also available as ~M-x misskey-navigation-open-note-url~;
+browser and copy commands are ~misskey-navigation-browse~ and
+~misskey-navigation-copy-link~.  The bindings above are the ordinary
+major-mode bindings; Evil's client-local bindings are listed below.
 
 ** Actions
 
@@ -109,9 +129,15 @@ the editable body.
 | Key | Action |
 |-----+--------|
 | ~C-c C-c~ | publish the draft once |
-| ~C-c C-v~ | Public, Home, or Followers visibility |
+| ~C-c C-v~ | Public, Home, Followers, or Specified visibility |
 | ~C-c C-a~ | attach a readable local file |
 | ~C-c C-d~ | detach one file from the current note |
+| ~C-c C-w~ | edit the content warning; empty input clears it |
+| ~C-c C-l~ | toggle local-only publication |
+| ~C-c C-r~ | add a recipient by ~@user[@host]~ or stable user ID |
+| ~C-c C-x~ | remove a recipient |
+| ~C-c C-m~ | reload the instance text limit |
+| ~C-c C-o~ | Transient draft options |
 | ~C-c C-n~ | insert another note after the current part |
 | ~C-c C-p~ | remove the current extra note |
 | ~C-c C-k~ | abandon an idle draft |
@@ -121,6 +147,24 @@ Local files stream to ~drive/files/create~; the compose State field
 shows a progress bar and percent for the file currently uploading.
 A multi-note draft publishes in order and makes each later note a
 reply to the preceding created note.
+
+The header shows each part's Unicode code-point count and the instance's
+~maxNoteTextLength~.  All parts and attachments are validated before any
+upload or publication starts.  Missing or failed limit discovery blocks
+publication rather than guessing a limit; ~C-c C-m~ retries without changing
+the draft.
+
+Replies inherit the original visibility, CW, and local-only restriction.
+Visibility cannot be widened beyond the target, and a required local-only
+restriction cannot be disabled.  Specified replies retain the original
+recipients and author, excluding the sender.  Specified publication requires
+resolved recipient IDs; it is audience-limited posting, not encrypted chat.
+Specified Notes, another author's followers-only Notes, and channel Notes
+cannot be quoted through this composer.
+
+Visibility, CW, local-only, and recipients apply to every part and are
+captured with the publication operation.  Later metadata or recipient
+lookups cannot alter a stopped draft or overwrite a newer recipient choice.
 
 After a successful upload, its Drive ID stays on that compose item.
 A later publish failure leaves the draft editable; a deliberate retry
@@ -137,6 +181,46 @@ Opening, refreshing, and paging notifications always send
 ~markAsRead: false~.  ~M~ is the only command that marks all
 notifications read.  ~RET~ opens the notification's note or actor
 when one is present.
+
+* Menus and Evil
+
+~?~ or ~M-x misskey-menu~ opens the browsing Transient.  Global view-opening
+commands work outside a Misskey view; Note, link, and user actions require
+the appropriate live context.  Commands act in the originating buffer,
+not in the popup.  Notification ~M~ remains an explicit mark-all action.
+
+~C-c C-o~ or ~M-x misskey-compose-menu~ opens draft options.  Visibility,
+CW, local-only, recipients, files, and parts operate on the existing draft;
+labels and availability update after each edit.  The menu stays open for
+option changes.  Only its explicit ~C-c C-c~ suffix publishes.
+
+When Evil is available, Appkit's optional integration provides normal and
+motion bindings in browsing views:
+
+| Key | Action |
+|-----+--------|
+| ~?~ | contextual menu |
+| ~g r~ | refresh |
+| ~g j~ / ~g k~ | next or previous entry |
+| ~g n~ | older page |
+| ~RET~ | link/CW, or directory/notification activation |
+| ~TAB~ | existing timeline/profile or directory cycle |
+| ~r~ / ~Q~ | reply or quote in Note views |
+| ~c~ | compose |
+| ~g o~ / ~g O~ | browser / open a supplied URL in Note views |
+| ~g y~ | copy the link or Note URL |
+| ~a~ | existing contextual action prefix |
+| ~M~ | explicitly mark notifications read, in the notification view |
+| ~q~ | close the window without discarding its buffer |
+
+Normal search and word motions, including ~n~, ~w~, and ~B~, are not
+replaced.  Compose starts in insert state; normal-state ~i~ returns to the
+editable input.  Its ~C-c~ controls remain available.
+
+Integration is local to Misskey maps, works with either Evil load order,
+and honors ~appkit-evil-enable-integration~.  Set that option to nil before
+loading Misskey to opt out.  ~M-x misskey-evil-setup~ reapplies integration
+after changing local maps.
 
 * Write safety
 

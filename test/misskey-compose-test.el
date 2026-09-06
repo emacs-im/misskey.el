@@ -33,6 +33,12 @@
               :status-fields-function #'misskey-compose--status-fields
               :parts-function #'misskey-compose--parts
               :footer-function #'misskey-compose--footer)
+             (cl-letf (((symbol-function 'misskey-http-read)
+                        (lambda (endpoint _parameters callback &rest _options)
+                          (unless (equal endpoint "meta")
+                            (ert-fail "Unexpected setup read"))
+                          (funcall callback '((maxNoteTextLength . 3000))))))
+               (misskey-compose-refresh-metadata))
              ,@body)
          (when (buffer-live-p ,buffer)
            (kill-buffer ,buffer))))))
@@ -242,7 +248,7 @@
           (should
            (equal captured
                   '(:text "reply" :visibility "followers"
-                          :replyId "parent"))))))))
+                    :replyId "parent"))))))))
 
 (ert-deftest misskey-compose-send-preserves-quote-target ()
   (misskey-test-with-session
@@ -261,7 +267,7 @@
           (misskey-compose-send)
           (should (equal captured
                          '(:text "comment" :visibility "public"
-                                 :renoteId "quoted"))))))))
+                           :renoteId "quoted"))))))))
 
 (ert-deftest misskey-compose-uploads-once-and-reuses-drive-file-after-failure ()
   (misskey-test-with-session
@@ -371,7 +377,11 @@
             (post-count 0)
             requests)
         (setq-local misskey-compose-renote-id "quoted"
-                    misskey-compose-target-label "@source")
+                    misskey-compose-target-label "@source"
+                    misskey-compose-cw "Spoilers"
+                    misskey-compose-local-only t
+                    misskey-compose-visibility 'specified
+                    misskey-compose-recipients '(("reader" . "@reader")))
         (goto-char (appkit-chat-compose-body-start-position))
         (insert "first")
         (misskey-compose-add-note)
@@ -397,6 +407,11 @@
           (should-not (appkit-compose-operation-active-p))
           (misskey-compose-send)
           (should (= post-count 3))
+          (dolist (parameters requests)
+            (should (equal (plist-get parameters :visibility) "specified"))
+            (should (equal (plist-get parameters :visibleUserIds) ["reader"]))
+            (should (equal (plist-get parameters :cw) "Spoilers"))
+            (should (eq (plist-get parameters :localOnly) t)))
           (should (equal (mapcar (lambda (parameters)
                                    (plist-get parameters :text))
                                  requests)
@@ -613,6 +628,199 @@
           (should (equal (appkit-chat-compose-body) "retry me"))
           (funcall (cadr callbacks) '((createdNote (id . "confirmed"))))
           (should-not (buffer-live-p buffer)))))))
+
+(ert-deftest misskey-compose-private-reply-preserves-audience-and-content-controls ()
+  (misskey-test-with-session
+    (let (buffer parameters)
+      (unwind-protect
+          (cl-letf (((symbol-function 'pop-to-buffer) #'set-buffer)
+                    ((symbol-function 'misskey-http-read)
+                     (lambda (endpoint _parameters callback &rest _options)
+                       (should (equal endpoint "meta"))
+                       (funcall callback '((maxNoteTextLength . 3000)))))
+                    ((symbol-function 'misskey-http-post)
+                     (lambda (_endpoint value callback &rest _options)
+                       (setq parameters value)
+                       (funcall callback '((createdNote (id . "reply")))))))
+            (setq buffer
+                  (misskey-compose-open
+                   nil :reply-id "parent"
+                   :target-note '((id . "parent") (visibility . "specified")
+                                  (cw . "Sensitive") (localOnly . t)
+                                  (visibleUserIds . ["self" "other" "author"])
+                                  (user (id . "author") (username . "writer")))))
+            (with-current-buffer buffer
+              (should-error (misskey-compose-set-visibility 'public) :type 'user-error)
+              (should-error (misskey-compose-toggle-local-only) :type 'user-error)
+              (goto-char (appkit-chat-compose-body-start-position))
+              (insert "reply")
+              (misskey-compose-send))
+            (should (equal (plist-get parameters :visibility) "specified"))
+            (should (equal (plist-get parameters :visibleUserIds) ["other" "author"]))
+            (should (equal (plist-get parameters :cw) "Sensitive"))
+            (should (eq (plist-get parameters :localOnly) t)))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest misskey-compose-unsafe-targets-are-rejected-before-opening ()
+  (misskey-test-with-session
+    (cl-letf (((symbol-function 'pop-to-buffer)
+               (lambda (&rest _) (ert-fail "Unsafe target opened a draft"))))
+      (should-error (misskey-compose-open nil :reply-id "target")
+                    :type 'user-error)
+      (dolist (note '(((id . "target") (visibility . "specified")
+                       (user (id . "other")))
+                      ((id . "target") (visibility . "followers")
+                       (user (id . "other")))))
+        (should-error (misskey-compose-open nil :renote-id "target" :target-note note)
+                      :type 'user-error))
+      (should-error
+       (misskey-compose-open
+        nil :reply-id "target"
+        :target-note '((id . "target") (visibility . "specified")
+                       (user (id . "other"))))
+       :type 'user-error))))
+
+(ert-deftest misskey-compose-unicode-preflight-checks-all-parts-before-any-write ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (setq misskey-compose--max-note-text-length 3)
+      (let ((writes 0) parameters)
+        (cl-letf (((symbol-function 'misskey-http-upload-file)
+                   (lambda (&rest _) (cl-incf writes)))
+                  ((symbol-function 'misskey-http-post)
+                   (lambda (_endpoint value _callback &rest options)
+                     (cl-incf writes)
+                     (setq parameters value)
+                     (funcall (plist-get options :errback) "Retain draft"))))
+          ;; Even a valid first part must not publish before validating the suffix.
+          (appkit-chat-compose-set-items
+           (list (list :text "ok" :attachments '((:path "missing" :drive-id "drive")))
+                 (list :text "\U0001F600éx")))
+          (should-error (misskey-compose-send) :type 'user-error)
+          (should (= writes 0))
+          ;; Astral emoji is one code point; a combining mark is its own code point.
+          (appkit-chat-compose-set-items (list (list :text "\U0001F600é")))
+          (should (string-match-p "3/3" (appkit-chat-compose--header-line)))
+          (misskey-compose-send)
+          (should (= writes 1))
+          (should (equal (plist-get parameters :text) "\U0001F600é")))))))
+
+(ert-deftest misskey-compose-missing-recipient-state-prevents-publication ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (goto-char (appkit-chat-compose-body-start-position))
+      (insert "private")
+      (misskey-compose-set-visibility 'specified)
+      (cl-letf (((symbol-function 'misskey-http-post)
+                 (lambda (&rest _) (ert-fail "Invalid recipient state published"))))
+        (should-error (misskey-compose-send) :type 'user-error)
+        (setq misskey-compose-recipients '(("bad id" . "Invalid")))
+        (should-error (misskey-compose-send) :type 'user-error)))))
+
+(ert-deftest misskey-compose-refresh-failure-and-late-results-remain-editing-safe ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (let (callbacks errbacks)
+        (cl-letf (((symbol-function 'misskey-http-read)
+                   (lambda (_endpoint _parameters callback &rest options)
+                     (push callback callbacks)
+                     (push (plist-get options :errback) errbacks)
+                     (misskey-http--request-create :callback #'ignore :errback #'ignore)))
+                  ((symbol-function 'misskey-http-cancel) #'ignore)
+                  ((symbol-function 'misskey-http-post)
+                   (lambda (&rest _) (ert-fail "Unknown instance limit published"))))
+          (let ((generation (appkit-compose-generation)))
+            (misskey-compose-refresh-metadata)
+            (misskey-compose-refresh-metadata)
+            (funcall (cadr callbacks) '((maxNoteTextLength . 9999)))
+            (should-not misskey-compose--max-note-text-length)
+            (funcall (car errbacks) "Offline")
+            (should (string-match-p "Offline" (appkit-chat-compose--header-line)))
+            (should (= generation (appkit-compose-generation))))
+          (goto-char (appkit-chat-compose-body-start-position))
+          (insert "still editable")
+          (should-error (misskey-compose-send) :type 'user-error)
+          (misskey-compose-refresh-metadata)
+          (funcall (car callbacks) '((maxNoteTextLength . 5)))
+          (should (= misskey-compose--max-note-text-length 5))
+          (misskey-compose-refresh-metadata)
+          (appkit-surface-stop (appkit-current-surface))
+          (let ((generation (appkit-compose-generation)))
+            (funcall (car callbacks) '((maxNoteTextLength . 100)))
+            (should-not misskey-compose--max-note-text-length)
+            (should (= generation (appkit-compose-generation)))))))))
+
+(ert-deftest misskey-compose-recipient-results-cannot-overwrite-later-audience-choices ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (let (callbacks requests)
+        (cl-letf (((symbol-function 'misskey-http-read)
+                   (lambda (endpoint parameters callback &rest _options)
+                     (should (equal endpoint "users/show"))
+                     (push parameters requests)
+                     (push callback callbacks)
+                     (misskey-http--request-create :callback #'ignore :errback #'ignore)))
+                  ((symbol-function 'misskey-http-cancel) #'ignore))
+          (misskey-compose-set-visibility 'specified)
+          (misskey-compose-add-recipient "@alice@remote.example")
+          (should (equal (car requests) '(:username "alice" :host "remote.example")))
+          (misskey-compose-add-recipient "@bob")
+          (funcall (cadr callbacks) '((id . "alice") (username . "alice")))
+          (should-not misskey-compose-recipients)
+          (funcall (car callbacks) '((id . "bob") (username . "bob")))
+          (should (equal (mapcar #'car misskey-compose-recipients) '("bob")))
+          (misskey-compose-add-recipient "@alice")
+          (misskey-compose-remove-recipient "bob")
+          (funcall (car callbacks) '((id . "alice") (username . "alice")))
+          (should-not misskey-compose-recipients)
+          (misskey-compose-add-recipient "@alice")
+          (misskey-compose-set-visibility 'home)
+          (funcall (car callbacks) '((id . "alice") (username . "alice")))
+          (should-not misskey-compose-recipients)
+          (should (eq misskey-compose-visibility 'home))
+          (misskey-compose-set-visibility 'specified)
+          (misskey-compose-add-recipient "@alice")
+          (let ((misskey-compose--account (copy-sequence misskey-compose--account)))
+            (funcall (car callbacks) '((id . "alice") (username . "alice")))
+            (should-not misskey-compose-recipients)))))))
+
+(ert-deftest misskey-compose-target-defaults-never-widen-an-explicit-audience ()
+  (misskey-test-with-session
+    (let (buffer)
+      (unwind-protect
+          (cl-letf (((symbol-function 'pop-to-buffer) #'set-buffer)
+                    ((symbol-function 'misskey-http-read)
+                     (lambda (_endpoint _parameters callback &rest _options)
+                       (funcall callback '((maxNoteTextLength . 3000))))))
+            (setq buffer
+                  (misskey-compose-open
+                   nil :reply-id "home" :visibility 'followers
+                   :target-note '((id . "home") (visibility . "home")
+                                  (localOnly . :json-false)
+                                  (user (id . "other") (username . "other")))))
+            (with-current-buffer buffer
+              (should (eq misskey-compose-visibility 'followers))
+              (should-not misskey-compose-local-only)
+              (should-error (misskey-compose-set-visibility 'public) :type 'user-error)
+              (misskey-compose-set-visibility 'home)
+              (should (eq misskey-compose-visibility 'home))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest misskey-compose-content-controls-track-semantic-edits-only ()
+  (misskey-test-with-session
+    (misskey-compose-test--with-buffer
+      (let ((generation (appkit-compose-generation)))
+        (misskey-compose-set-cw "Spoilers")
+        (should (= (appkit-compose-generation) (1+ generation)))
+        (misskey-compose-set-cw "Spoilers")
+        (should (= (appkit-compose-generation) (1+ generation)))
+        (misskey-compose-toggle-local-only)
+        (should (= (appkit-compose-generation) (+ 2 generation)))
+        (misskey-compose-set-cw "")
+        (should-not misskey-compose-cw)
+        (should (= (appkit-compose-generation) (+ 3 generation)))
+        (should-error (misskey-compose-set-cw (make-string 101 ?x)) :type 'user-error)
+        (should (= (appkit-compose-generation) (+ 3 generation)))))))
 
 (provide 'misskey-compose-test)
 
