@@ -108,7 +108,7 @@
           (when (appkit-surface-p view) (kill-buffer (appkit-surface-buffer view))))))))
 
 (ert-deftest
-    misskey-search-settles-realistic-pages-across-live-surfaces nil
+    misskey-search-settles-realistic-pages-across-live-surfaces ()
   (misskey-test-with-session
     (let ((account (misskey--current-account)) requests tag other)
       (cl-letf
@@ -150,10 +150,9 @@
         (with-current-buffer (appkit-surface-buffer other)
           (should (string-match-p "No matching notes" (buffer-string))))))))
 
-
 (ert-deftest
     misskey-search-paging-retries-without-overlap-or-stale-query-results
-    nil
+    ()
   (misskey-test-with-session
     (let (requests view)
       (cl-letf
@@ -206,7 +205,6 @@
         (should
          (equal (misskey-test-visible-note-keys view)
                 '("second" "older")))))))
-
 
 (provide 'misskey-search-test)
 

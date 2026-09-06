@@ -76,10 +76,18 @@ Settled pages remain cached for the account when its timeline Surface
 closes.  Reopening refreshes the selected mode without reviving an old
 request.  Older-page loading preserves the current Note's position.
 
+Approaching the visible bottom automatically loads older Notes or more
+direct replies in timeline, profile, search, and thread views.  This
+observes the window edge, including mouse and scrollbar movement, rather
+than only point.  An active request blocks another; exhaustion stops
+paging, and a failed page pauses automatic loading until an explicit
+retry with ~N~ (Evil: ~g n~) or refresh.
+
 Profile ~TAB~ cycles Notes, Notes + replies, and Media; ~f~ and ~F~ open
 followers and following.  A thread shows its focused Note, visible
-ancestor chain, and replies.  Each search invocation owns independent
-results, cursor, request, and content-warning state.
+ancestor chain, and replies.  Reopening an already loaded thread retains
+its replies and position; refresh is explicit.  Each search invocation
+owns independent results, cursor, request, and content-warning state.
 
 Note views use Appkit's discussion mode and native soft wrapping.  Long
 text and links wrap at the window edge with avatar and reply indentation
@@ -92,6 +100,11 @@ Reply, quote, and reaction actions use that displayed Note; deletion acts
 on the exact row, so deleting your renote does not delete its original.
 A quote contains its own text alongside the referenced Note.
 
+~RET~ on a Note's body opens its native thread.  On a link, author,
+CW control, attachment, or button it activates that exact target instead.
+Pure renotes open the displayed Note's thread; quoted text stays in the
+containing quote's thread, while each author span opens its own profile.
+
 HTTP(S) links, mentions, and hashtags are actionable in ordinary and quoted
 text without changing copied text.  Code and ~<plain>~ content stay
 literal.  A bare mention in a remote author's text resolves on that
@@ -103,9 +116,10 @@ credentials are never sent to the linked host.  Other web links open in
 the browser.  A newer navigation or stopped Surface retires a pending
 resolution.
 
-CW hides the guarded body until explicitly revealed.  Hidden bodies do
-not expose navigation links or sensitive media.  In graphical views,
-text renders first; avatars and image/video thumbnails load
+CW hides the guarded body until its heading or reveal control is
+explicitly activated.  Hidden bodies do not expose navigation links or
+sensitive media.  In graphical views, text renders first; avatars and
+image/video thumbnails load
 asynchronously through a bounded account queue.  Audio, PDF, archives,
 and other attachments remain actionable through their original HTTPS
 resource.
@@ -146,7 +160,7 @@ plain key would replace an established Evil motion:
 | Refresh | ~g~ | ~g r~ |
 | Next / previous entry | ~n~ / ~p~ | ~g j~ / ~g k~ |
 | Older page | ~N~ | ~g n~ |
-| Link or CW; directory activation | ~RET~ | ~RET~ |
+| Open Note or activate exact target | ~RET~ | ~RET~ |
 | Cycle timeline/profile/directory | ~TAB~ | ~TAB~ |
 | Compose | ~c~ in timeline | ~c~ |
 | Reply / quote | ~r~ / ~q~ | ~r~ / ~Q~ |
@@ -157,7 +171,8 @@ plain key would replace an established Evil motion:
 | Contextual actions | ~a~ | ~a~ |
 | Acknowledge all notifications | ~M~ in notifications | ~M~ in notifications |
 
-Mouse-2 activates text links.  Browser, URL, and copy commands are also
+Mouse-2 uses the same contextual activation.  Browser, URL, and copy
+commands are also
 available as ~misskey-navigation-browse~,
 ~misskey-navigation-open-note-url~, and ~misskey-navigation-copy-link~.
 
@@ -259,6 +274,10 @@ Disable graphical previews or avatars independently:
 
 ~misskey-timeline-media-preview-width~ and
 ~misskey-timeline-media-preview-height~ bound preview sizes.
+
+~misskey-scroll-auto-load-threshold~ controls automatic pagination's
+distance from the visible bottom, in characters.  Set it to nil to
+disable automatic loading without changing manual paging.
 
 Evil support is local to Misskey maps and works with either load order.
 Compose starts in insert state; normal-state ~i~ returns to editable input,

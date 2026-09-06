@@ -345,7 +345,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                       (should (equal (misskey-test-visible-note-keys view) '("local-2" "local-1")))))))))
         (misskey-timeline-test--cleanup view buffer)))))
 
-(ert-deftest misskey-home-loads-older-notes-with-stable-position nil
+(ert-deftest misskey-home-loads-older-notes-with-stable-position ()
   (misskey-test-with-session
     (let
         ((misskey-instance-url "https://example.social")
@@ -449,7 +449,6 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                    :type 'user-error)
                   (should (= (length requests) request-count))))))
         (misskey-timeline-test--cleanup view buffer)))))
-
 
 (ert-deftest misskey-home-loads-avatar-with-stable-row-position ()
   (misskey-test-with-session
@@ -1099,7 +1098,7 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
 
 (ert-deftest
     misskey-timeline-auto-pagination-pauses-on-error-and-stops-at-exhaustion
-    nil
+    ()
   (misskey-test-with-session
     (save-window-excursion
       (let ((misskey-scroll-auto-load-threshold 100) requests view)
@@ -1109,7 +1108,9 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
                 (push
                  (list parameters callback
                        (plist-get options :errback))
-                 requests))))
+                 requests)
+                (misskey-http--request-create :callback #'ignore
+                                              :errback #'ignore))))
           (setq view (misskey-home)) (misskey-test-drain view)
           (funcall (cadr (car requests))
                    (list (misskey-timeline-test--note "n3" "Newest")
@@ -1155,7 +1156,6 @@ SENSITIVE, TYPE, THUMBNAIL-URL, and URL customize its wire fields."
               (should
                (plist-get (appkit-surface-model view)
                           :older-exhausted-p)))))))))
-
 
 (provide 'misskey-timeline-test)
 

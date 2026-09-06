@@ -48,17 +48,25 @@
 (declare-function misskey-menu "misskey-menu" nil)
 
 (defvar-keymap misskey-profile-mode-map
-  :doc "Keymap for `misskey-profile-mode'." :parent special-mode-map
-  "TAB" #'misskey-profile-next-mode "g" #'misskey-profile-refresh "N"
-  #'misskey-profile-load-more "n" #'appkit-discussion-next-entry "p"
-  #'appkit-discussion-previous-entry "RET"
-  #'misskey-navigation-activate "<mouse-2>"
-  #'misskey-navigation-mouse-activate "O"
-  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
-  "w" #'misskey-navigation-copy-link "t" #'misskey-thread-at-point "a"
-  misskey-actions-map "r" #'misskey-compose-reply-at-point "q"
-  #'misskey-compose-quote-at-point "f" #'misskey-profile-followers "F"
-  #'misskey-profile-following "?" #'misskey-menu)
+  :doc "Keymap for `misskey-profile-mode'."
+  :parent special-mode-map
+  "TAB" #'misskey-profile-next-mode
+  "g" #'misskey-profile-refresh
+  "N" #'misskey-profile-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-navigation-activate
+  "<mouse-2>" #'misskey-navigation-mouse-activate
+  "O" #'misskey-navigation-open-note-url
+  "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link
+  "t" #'misskey-thread-at-point
+  "a" misskey-actions-map
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point
+  "f" #'misskey-profile-followers
+  "F" #'misskey-profile-following
+  "?" #'misskey-menu)
 
 (define-derived-mode misskey-profile-mode appkit-discussion-mode "Misskey-Profile"
   "Major mode for one Misskey user profile."
@@ -190,8 +198,6 @@ USER may be a Misskey user object, a user ID, or `@username@host'."
            ('older "Loading older notes...\n\n")
            ('error (format "Unable to load profile.\n%s\n\n" message))
            (_ (if items "" "No notes returned.\n\n"))))))))
-
-
 
 (defun misskey-profile--header-line ()
   "Return the current profile mode header line."
@@ -406,7 +412,6 @@ the account selected by current customization."
       (unless (plist-get state :profile-loading-p)
         (misskey-profile--request-user view)))
     view))
-
 
 (provide 'misskey-profile)
 

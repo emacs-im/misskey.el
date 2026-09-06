@@ -185,7 +185,7 @@ VIEW supplies the account and owns any asynchronous federation resolution."
         ('browser (browse-url url))
         (_ (misskey-navigation--open-native (car route) (cadr route) account))))))
 
-(defun misskey-navigation-activate nil
+(defun misskey-navigation-activate ()
   "Activate the exact link, action, button, or author, or open the note thread."
   (interactive)
   (cond
@@ -218,7 +218,6 @@ VIEW supplies the account and owns any asynchronous federation resolution."
                                        account)))
    (t (misskey-read-cancel (misskey-navigation--view) 'navigation)
       (require 'misskey-thread) (misskey-thread-at-point))))
-
 
 (defun misskey-navigation-mouse-activate (event)
   "Activate the exact text span clicked by EVENT."

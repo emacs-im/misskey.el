@@ -33,16 +33,22 @@
 (declare-function misskey-menu "misskey-menu" nil)
 
 (defvar-keymap misskey-search-mode-map
-  :doc "Keymap for `misskey-search-mode'." :parent special-mode-map
-  "g" #'misskey-search-refresh "N" #'misskey-search-load-more "n"
-  #'appkit-discussion-next-entry "p"
-  #'appkit-discussion-previous-entry "RET"
-  #'misskey-navigation-activate "<mouse-2>"
-  #'misskey-navigation-mouse-activate "O"
-  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
-  "w" #'misskey-navigation-copy-link "t" #'misskey-thread-at-point "a"
-  misskey-actions-map "r" #'misskey-compose-reply-at-point "q"
-  #'misskey-compose-quote-at-point "?" #'misskey-menu)
+  :doc "Keymap for `misskey-search-mode'."
+  :parent special-mode-map
+  "g" #'misskey-search-refresh
+  "N" #'misskey-search-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-navigation-activate
+  "<mouse-2>" #'misskey-navigation-mouse-activate
+  "O" #'misskey-navigation-open-note-url
+  "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link
+  "t" #'misskey-thread-at-point
+  "a" misskey-actions-map
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point
+  "?" #'misskey-menu)
 
 (define-derived-mode misskey-search-mode appkit-discussion-mode "Misskey-Search"
   "Major mode for one independent Misskey note search."

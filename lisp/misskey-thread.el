@@ -35,17 +35,22 @@
 (declare-function misskey-menu "misskey-menu" nil)
 
 (defvar-keymap misskey-thread-mode-map
-  :doc "Keymap for `misskey-thread-mode'." :parent special-mode-map
-  "g" #'misskey-thread-refresh "N" #'misskey-thread-load-more "n"
-  #'appkit-discussion-next-entry "p"
-  #'appkit-discussion-previous-entry "RET"
-  #'misskey-navigation-activate "<mouse-2>"
-  #'misskey-navigation-mouse-activate "O"
-  #'misskey-navigation-open-note-url "B" #'misskey-navigation-browse
-  "w" #'misskey-navigation-copy-link "t" #'misskey-thread-at-point "r"
-  #'misskey-compose-reply-at-point "q"
-  #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
-  #'misskey-menu)
+  :doc "Keymap for `misskey-thread-mode'."
+  :parent special-mode-map
+  "g" #'misskey-thread-refresh
+  "N" #'misskey-thread-load-more
+  "n" #'appkit-discussion-next-entry
+  "p" #'appkit-discussion-previous-entry
+  "RET" #'misskey-navigation-activate
+  "<mouse-2>" #'misskey-navigation-mouse-activate
+  "O" #'misskey-navigation-open-note-url
+  "B" #'misskey-navigation-browse
+  "w" #'misskey-navigation-copy-link
+  "t" #'misskey-thread-at-point
+  "r" #'misskey-compose-reply-at-point
+  "q" #'misskey-compose-quote-at-point
+  "a" misskey-actions-map
+  "?" #'misskey-menu)
 
 (define-derived-mode misskey-thread-mode appkit-discussion-mode "Misskey-Thread"
   "Major mode for one Misskey note thread."
@@ -401,7 +406,6 @@ UNTIL-ID is the required cursor for an older page."
               (plist-get current :loaded-p)))
       (misskey-thread--request view 'initial))
     view))
-
 
 (defun misskey-thread-at-point ()
   "Open the thread for the displayed Misskey note at point.

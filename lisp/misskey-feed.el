@@ -239,9 +239,9 @@ request; older paging never interrupts an unfinished page."
       (setf (plist-get state :phase) phase
             (plist-get state :message) nil)
       (misskey-dispatch view
-                       (list :render
-                             (appkit-projection-change-create
-                              :frame-p t :position 'preserve)))
+                        (list :render
+                              (appkit-projection-change-create
+                               :frame-p t :position 'preserve)))
       (misskey-http-read
        endpoint parameters
        (lambda (payload)

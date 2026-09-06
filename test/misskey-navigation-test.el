@@ -144,7 +144,7 @@
           (kill-buffer (appkit-surface-buffer view)))))))
 
 (ert-deftest misskey-navigation-displayed-note-and-exact-actor-targets
-    nil
+    ()
   (misskey-test-with-session
     (with-temp-buffer
       (let*
@@ -186,7 +186,6 @@
           (goto-char (point-min)) (search-forward "Quoting ")
           (misskey-navigation-activate)
           (should (equal opened (list 'user "user-target" account))))))))
-
 
 (ert-deftest misskey-navigation-local-actions-do-not-leak-into-note-body ()
   (misskey-test-with-session

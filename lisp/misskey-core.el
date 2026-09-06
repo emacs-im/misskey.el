@@ -714,7 +714,6 @@ Set to nil to disable automatic pagination; manual loading remains available."
               (cdr frame))
       frame)))
 
-
 (defun misskey-app--update (context model message)
   "Commit account-owned results and return exact replies."
   (or (and (fboundp 'misskey-media-app-update)
