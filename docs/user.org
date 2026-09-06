@@ -56,7 +56,9 @@ An instance on a non-default HTTPS port uses ~misskey-PORT~, such as
 | ~a~ | prefix contextual note and user actions |
 
 Timeline ~TAB~ cycles Home, Local, Social, and Global in one view
-while retaining each mode's loaded notes and position.  Profile ~TAB~
+while retaining each mode's loaded notes and position.  Settled pages remain
+cached for the account when the timeline closes; reopening refreshes the
+selected mode without reviving its old request.  Profile ~TAB~
 cycles Notes, Notes + replies, and Media; ~f~ and ~F~ open followers
 and following directories.  Each ~misskey-search~ invocation owns an
 independent result set, cursor, request, and content-warning state.
@@ -83,6 +85,8 @@ and video thumbnails asynchronously.  Every Drive attachment remains
 visible and actionable.  Audio, PDF, archives, and other generic
 files open their original HTTPS resource.  Text renders first.
 Sensitive media stays hidden until the user reveals its note.
+Preview work is queued per account with bounded concurrency; large pages
+continue loading as earlier downloads finish.
 
 Media caches are isolated by server and account.  Opening an attachment
 belongs to the note surface where it was activated: closing that surface
@@ -122,7 +126,10 @@ After a successful upload, its Drive ID stays on that compose item.
 A later publish failure leaves the draft editable; a deliberate retry
 reuses that Drive file.
 
-An in-flight write cannot be silently canceled.
+Stopping the account or compose Surface cancels its local publication work
+and preserves an editable draft.  Late responses cannot resume its reply
+chain.  A dispatched write may still have reached the server: inspect the
+server before copying the retained content into a new draft and retrying.
 
 * Notifications
 

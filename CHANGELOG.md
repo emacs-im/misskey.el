@@ -17,6 +17,7 @@
 - Migrated Misskey sessions and generated hosts to canonical Appkit Apps, Surfaces, and Effects. Media acquisition now commits before presentation, rejects superseded or closed-host results, and isolates disk caches by account while retaining targeted projection updates and semantic positions.
 - Added authenticated JSON and streaming multipart curl transports with redirects and retries disabled, raw response and diagnostic byte caps, strict bearer validation, Appkit-owned cancellation, token redaction, and unknown-outcome reporting for every post-dispatch write failure.
 - Added Drive upload progress on the compose submit status strip, measured from curl's upload meter without loading the file into Emacs.
+- Timeline refresh, pagination, kind selection, and content-warning changes now commit through Surface domain messages. The App retains settled page snapshots rather than sharing mutable view state; account state merges commit before exact replies install fetched notes.
 
 ### Fixed
 
@@ -26,3 +27,6 @@
 - Browsing or paging a notification view never implicitly acknowledges remote notifications.
 - Note views keep timestamps at the live window's right edge, elide long author headings in narrow windows, and restore the complete heading after widening.
 - Pure Renotes show `renoted by …` as pre-heading social context, followed by the original author's avatar, heading, timestamp, and content.
+- Preview demands now share a bounded account queue, so large cold-cache pages do not exhaust the App's active Effect limit. Completed or failed previews release capacity for waiting resources.
+- Stopping a publishing Compose Surface retires its operation and leaves the retained draft editable; cancellation-time and late results cannot resume the reply chain.
+- Changing draft visibility advances its semantic generation exactly once; setting the same visibility leaves the draft unchanged.

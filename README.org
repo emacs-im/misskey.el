@@ -11,7 +11,8 @@ attachments, and contextual note and user actions.
 * Install
 
 Emacs 29.1, Appkit 0.2.16, Plz 0.9.1, ~curl~, and ~uuidgen~ are
-required.  Put ~misskey.el~, Appkit, and Plz on ~load-path~, then:
+required.  Put this repository's ~lisp/~ directory, Appkit, and Plz on
+~load-path~, then:
 
 #+begin_src emacs-lisp
 (require 'misskey)
