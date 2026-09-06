@@ -226,7 +226,7 @@
           (misskey--account-create :origin "https://example.social"
                                    :auth-source-user "TOKEN"
                                    :remote-user-id "self"))
-         (request (list 'initial-request)) cancelled operation view)
+         (request (misskey-http--request-create :callback #'ignore :errback #'ignore)) cancelled operation view)
       (unwind-protect
           (cl-letf
               (((symbol-function 'message) #'ignore)

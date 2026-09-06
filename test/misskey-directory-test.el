@@ -149,7 +149,7 @@
                                    :auth-source-user "TOKEN"
                                    :remote-user-id "self"))
          (subject (misskey-directory-test--user "owner" "owner"))
-         (request (list 'directory-request)) cancelled operation view)
+         (request (misskey-http--request-create :callback #'ignore :errback #'ignore)) cancelled operation view)
       (unwind-protect
           (cl-letf
               (((symbol-function 'message) #'ignore)
