@@ -47,11 +47,10 @@
   #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
   #'misskey-menu)
 
-(define-derived-mode misskey-thread-mode special-mode "Misskey-Thread"
+(define-derived-mode misskey-thread-mode appkit-discussion-mode "Misskey-Thread"
   "Major mode for one Misskey note thread."
   (setq-local header-line-format nil)
-  (setq-local line-spacing 0)
-  (visual-line-mode 1))
+  (setq-local line-spacing 0))
 
 (defun misskey-thread--state (view)
   "Return VIEW's validated thread state."

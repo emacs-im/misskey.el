@@ -58,12 +58,11 @@
   #'misskey-compose-quote-at-point "a" misskey-actions-map "?"
   #'misskey-menu)
 
-(define-derived-mode misskey-timeline-mode special-mode "Misskey-Timeline"
+(define-derived-mode misskey-timeline-mode appkit-discussion-mode "Misskey-Timeline"
   "Major mode for authenticated Misskey timelines."
   (setq-local header-line-format
               '(:eval (misskey-timeline--header-line)))
-  (setq-local line-spacing 0)
-  (visual-line-mode 1))
+  (setq-local line-spacing 0))
 
 (defun misskey-timeline--make-state (account kind)
   "Return fresh Surface-owned state for ACCOUNT's timeline KIND."

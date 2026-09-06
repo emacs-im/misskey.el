@@ -44,11 +44,10 @@
   misskey-actions-map "r" #'misskey-compose-reply-at-point "q"
   #'misskey-compose-quote-at-point "?" #'misskey-menu)
 
-(define-derived-mode misskey-search-mode special-mode "Misskey-Search"
+(define-derived-mode misskey-search-mode appkit-discussion-mode "Misskey-Search"
   "Major mode for one independent Misskey note search."
   (setq-local header-line-format nil)
-  (setq-local line-spacing 0)
-  (visual-line-mode 1))
+  (setq-local line-spacing 0))
 
 (defun misskey-search--current-view ()
   "Return the current live Misskey search view, or nil."

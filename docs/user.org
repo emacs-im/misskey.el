@@ -46,9 +46,9 @@ An instance on a non-default HTTPS port uses ~misskey-PORT~, such as
 
 * Note views
 
-Timelines, threads, profiles, and note searches enable native ~visual-line-mode~
-by default.  Long text and links wrap at the window edge while retaining the
-renderer’s avatar and reply indentation.
+Timelines, threads, profiles, and note searches inherit Appkit's discussion
+mode and its default native soft wrapping.  Long text and links wrap at the
+window edge while retaining the renderer’s avatar and reply indentation.
 
 | Key | Action |
 |-----+--------|
