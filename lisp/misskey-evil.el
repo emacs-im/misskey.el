@@ -47,7 +47,7 @@ Safe to call repeatedly, including after Evil loads or view buffers exist."
           (appkit-evil-define-readonly-keys map)
           (appkit-evil-define-keys '(normal motion) map
             "?" #'misskey-menu
-            "g r" refresh
+            "g s" #'misskey-search
             "g n" more
             "a" misskey-actions-map
             "c" (if (eq mode 'misskey-timeline-mode)
@@ -62,6 +62,7 @@ Safe to call repeatedly, including after Evil loads or view buffers exist."
               "<tab>" (car cycle)))
           (if (memq mode '(misskey-notifications-mode misskey-directory-mode))
               (appkit-evil-define-keys '(normal motion) map
+                "g r" refresh
                 "RET" #'appkit-directory-activate
                 "<return>" #'appkit-directory-activate
                 "g j" #'appkit-directory-next-item
@@ -71,13 +72,19 @@ Safe to call repeatedly, including after Evil loads or view buffers exist."
               "<return>" #'misskey-navigation-activate
               "g j" #'appkit-discussion-next-entry
               "g k" #'appkit-discussion-previous-entry
-              "g o" #'misskey-navigation-browse
+              "g r" #'misskey-thread-at-point
+              "g x" #'misskey-navigation-browse
               "g O" #'misskey-navigation-open-note-url
-              "g y" #'misskey-navigation-copy-link
+              "Z l" #'misskey-navigation-copy-link
+              "!" #'misskey-react-at-point
+              "s" #'misskey-favorite-at-point
+              "D" #'misskey-delete-note-at-point
+              "d d" #'misskey-delete-note-at-point
               "r" #'misskey-compose-reply-at-point
               "Q" #'misskey-compose-quote-at-point))))
       (appkit-evil-define-keys '(normal motion) 'misskey-compose-mode-map
-        "i" #'appkit-evil-chatbuf-enter-input)
+        "i" #'appkit-evil-chatbuf-enter-input
+        "Z f" #'misskey-compose-attach-file)
       (dolist (mode (cons 'misskey-compose-mode modes))
         (add-hook (intern (concat (symbol-name mode) "-hook"))
                   #'appkit-evil-normalize-keymaps))
@@ -85,6 +92,14 @@ Safe to call repeatedly, including after Evil loads or view buffers exist."
 
 (with-eval-after-load 'evil
   (misskey-evil-setup))
+
+(with-eval-after-load 'evil-snipe
+  (dolist (mode (cons 'misskey-compose-mode
+                      (mapcar #'car misskey-evil--views)))
+    (add-hook (intern (concat (symbol-name mode) "-hook"))
+              #'turn-off-evil-snipe-mode)
+    (add-hook (intern (concat (symbol-name mode) "-hook"))
+              #'turn-off-evil-snipe-override-mode)))
 
 (provide 'misskey-evil)
 ;;; misskey-evil.el ends here
