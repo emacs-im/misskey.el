@@ -57,8 +57,10 @@
 
 (autoload 'misskey-menu "misskey-menu" nil t)
 (autoload 'misskey-compose-menu "misskey-menu" nil t)
-(require 'misskey-evil)
 
 (provide 'misskey)
+
+(with-eval-after-load 'evil
+  (require 'misskey-evil nil t))
 
 ;;; misskey.el ends here

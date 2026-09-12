@@ -2,16 +2,14 @@
 
 ;;; Commentary:
 
-;; Client-local Evil bindings using Appkit's optional integration.  Load after
-;; the Misskey view modules; Evil itself need not be installed or loaded.
+;; Client-local Evil bindings using Appkit's optional integration.  Requiring
+;; this adapter loads Misskey; Evil itself need not be installed or loaded.
 
 ;;; Code:
 
 (require 'appkit-evil)
-
-(declare-function misskey-menu "misskey-menu" ())
-(declare-function misskey-compose-menu "misskey-menu" ())
-(declare-function misskey-compose "misskey" ())
+(require 'misskey)
+(require 'misskey-menu)
 
 (defconst misskey-evil--views
   '((misskey-timeline-mode misskey-timeline-mode-map
