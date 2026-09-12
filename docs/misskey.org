@@ -151,30 +151,7 @@ Confirmed actions update account-scoped state across matching live views.
 
 ** Browsing keys
 
-The ordinary bindings and Evil's normal/motion bindings differ where a
-plain key would replace an established Evil motion:
-
-| Action | Ordinary | Evil |
-|--------+----------+------|
-| Context menu | ~?~ | ~?~ |
-| Refresh | ~g~ | ~g r~ |
-| Next / previous entry | ~n~ / ~p~ | ~g j~ / ~g k~ |
-| Older page | ~N~ | ~g n~ |
-| Open Note or activate exact target | ~RET~ | ~RET~ |
-| Cycle timeline/profile/directory | ~TAB~ | ~TAB~ |
-| Compose | ~c~ in timeline | ~c~ |
-| Reply / quote | ~r~ / ~q~ | ~r~ / ~Q~ |
-| Open Note thread | ~t~ | ~? T~ |
-| Browser | ~B~ | ~g o~ |
-| Open a supplied Note/profile URL | ~O~ | ~g O~ |
-| Copy link or Note URL | ~w~ | ~g y~ |
-| Contextual actions | ~a~ | ~a~ |
-| Acknowledge all notifications | ~M~ in notifications | ~M~ in notifications |
-
-Mouse-2 uses the same contextual activation.  Browser, URL, and copy
-commands are also
-available as ~misskey-navigation-browse~,
-~misskey-navigation-open-note-url~, and ~misskey-navigation-copy-link~.
+Optional Evil bindings are defined in ~misskey-evil.el~.
 
 Evil ~q~ closes the window without discarding its buffer.  Merely hiding
 a window is different from killing its buffer or stopping its Surface.
@@ -281,8 +258,11 @@ disable automatic loading without changing manual paging.
 
 Evil support is local to Misskey maps and works with either load order.
 Compose starts in insert state; normal-state ~i~ returns to editable input,
-and ~C-c~ controls remain available.  Normal search and word motions such
-as ~n~, ~w~, and ~B~ are not replaced.  To opt out, set
+and ~C-c~ controls remain available, including ~C-c C-o~ for the compose menu.
+In normal/motion state, ~Z f~ attaches a file; ~C-c C-m~ refreshes draft metadata.
+Normal search and word motions such as ~n~, ~w~, and ~B~ are not replaced.
+Evil Snipe and its override mode are disabled in all Misskey modes,
+including Compose.  To opt out of Evil integration, set
 ~appkit-evil-enable-integration~ to nil before loading Misskey.
 ~M-x misskey-evil-setup~ reapplies integration after local map changes.
 
